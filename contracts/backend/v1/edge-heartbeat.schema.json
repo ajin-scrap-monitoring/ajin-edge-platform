@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ajin:edge:heartbeat:1.0",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "site_id",
+    "edge_id",
+    "config_revision",
+    "reported_at",
+    "state",
+    "reason_codes",
+    "clock",
+    "services"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "edge_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "config_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "deployment_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "camera_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "reported_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "state": {
+      "enum": [
+        "HEALTHY",
+        "DEGRADED",
+        "MEASUREMENT_UNAVAILABLE",
+        "OFFLINE_BUFFERING",
+        "CONFIG_ERROR"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "maxItems": 64,
+      "uniqueItems": true
+    },
+    "clock": {
+      "type": "object",
+      "required": [
+        "state",
+        "offset_ms"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "SYNCED",
+            "DEGRADED",
+            "UNSYNCED"
+          ]
+        },
+        "offset_ms": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "service",
+          "state",
+          "reason_codes"
+        ]
+      },
+      "maxItems": 16
+    }
+  },
+  "additionalProperties": false
+}

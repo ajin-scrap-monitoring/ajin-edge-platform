@@ -1,0 +1,133 @@
+name: ajin-edge
+
+x-deployment: &deployment
+  SITE_ID: ${SITE_ID:?set SITE_ID}
+  EDGE_ID: ${EDGE_ID:?set EDGE_ID}
+  CONFIG_REVISION: ${CONFIG_REVISION:?set CONFIG_REVISION}
+  DEPLOYMENT_REVISION: ${DEPLOYMENT_REVISION:?set DEPLOYMENT_REVISION}
+  CAMERA_ID: ${CAMERA_ID:?set CAMERA_ID}
+
+x-common: &common
+  user: "10001:10001"
+  restart: "on-failure:5"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  init: true
+  stop_grace_period: 20s
+  tmpfs: [/tmp:size=16m,mode=1777]
+  logging:
+    driver: json-file
+    options: {max-size: "5m", max-file: "3"}
+
+services:
+  lidar-driver-a:
+    <<: *common
+    image: ${LIDAR_DRIVER_IMAGE:-ajin-lidar-driver:0.1.0}
+    network_mode: host
+    environment: *deployment
+    command: ["--sensor-id", "lidar-a", "--edge-id", "${EDGE_ID:?set EDGE_ID}",
+      "--config-revision", "${CONFIG_REVISION:?set CONFIG_REVISION}",
+      "--ip", "${LIDAR_A_IP:?set LIDAR_A_IP}", "--port", "8089",
+      "--endpoint", "unix:/run/ajin-edge/lidar-a.sock", "--status-dir", "/status"]
+    volumes:
+      - ${RUNTIME_DIR:?set absolute RUNTIME_DIR}/sockets/a:/run/ajin-edge
+      - ${RUNTIME_DIR}/status/lidar-driver-a:/status
+
+  lidar-driver-b:
+    <<: *common
+    image: ${LIDAR_DRIVER_IMAGE:-ajin-lidar-driver:0.1.0}
+    network_mode: host
+    environment: *deployment
+    command: ["--sensor-id", "lidar-b", "--edge-id", "${EDGE_ID}",
+      "--config-revision", "${CONFIG_REVISION}", "--ip", "${LIDAR_B_IP:?set LIDAR_B_IP}",
+      "--port", "8089", "--endpoint", "unix:/run/ajin-edge/lidar-b.sock", "--status-dir", "/status"]
+    volumes:
+      - ${RUNTIME_DIR}/sockets/b:/run/ajin-edge
+      - ${RUNTIME_DIR}/status/lidar-driver-b:/status
+
+  lidar-processing:
+    <<: *common
+    image: ${LIDAR_PROCESSING_IMAGE:-ajin-lidar-processing:0.1.0}
+    command: ["--config", "/config/edge.json", "--status-dir", "/status",
+      "--clock-file", "/clock/clock.json", "--uplink", "unix:/sockets/uplink/measurement.sock"]
+    environment:
+      <<: *deployment
+      CONFIG_SHA256: "${CONFIG_SHA256:?set configuration SHA256}"
+    volumes:
+      - ${CONFIG_FILE:?set absolute CONFIG_FILE}:/config/edge.json:ro
+      - ${RUNTIME_DIR}/sockets/a:/sockets/a:ro
+      - ${RUNTIME_DIR}/sockets/b:/sockets/b:ro
+      - ${RUNTIME_DIR}/sockets/uplink:/sockets/uplink:ro
+      - ${RUNTIME_DIR}/status/lidar-processing:/status
+      - ${RUNTIME_DIR}/clock:/clock:ro
+    healthcheck:
+      test: [CMD, edge-healthcheck, /status/lidar-processing.json]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  measurement-uplink:
+    <<: *common
+    image: ${MEASUREMENT_UPLINK_IMAGE:-ajin-measurement-uplink:0.1.0}
+    command: ["--config", "/config/edge.json", "--status-dir", "/status",
+      "--listen", "unix:/sockets/measurement.sock", "--database", "/data/outbox.db",
+      "--url", "${MEASUREMENT_URL:?set HTTPS endpoint}", "--token-file", "/run/secrets/edge_token"]
+    environment:
+      <<: *deployment
+      CONFIG_SHA256: "${CONFIG_SHA256}"
+    secrets: [edge_token]
+    volumes:
+      - ${CONFIG_FILE}:/config/edge.json:ro
+      - ${RUNTIME_DIR}/sockets/uplink:/sockets
+      - ${RUNTIME_DIR}/outbox:/data
+      - ${RUNTIME_DIR}/status/measurement-uplink:/status
+    healthcheck:
+      test: [CMD, edge-healthcheck, /status/measurement-uplink.json]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  camera-edge:
+    <<: *common
+    image: ${CAMERA_EDGE_IMAGE:-ajin-camera-edge:0.1.0}
+    environment:
+      <<: *deployment
+      CAMERA_ID: ${CAMERA_ID:?set CAMERA_ID}
+      MEDIA_WSS_URL: ${MEDIA_WSS_URL:?set WSS endpoint}
+      CAMERA_TOKEN_FILE: /run/secrets/camera_token
+      EDGE_ID: ${EDGE_ID}
+      CONFIG_REVISION: ${CONFIG_REVISION}
+      EDGE_STATUS_DIR: /status
+      CAMERA_DEVICE: /dev/video0
+    secrets: [camera_token]
+    devices: ["${CAMERA_DEVICE:-/dev/video0}:/dev/video0"]
+    group_add: ["${VIDEO_GID:?set host video group ID}"]
+    volumes: ["${RUNTIME_DIR}/status/camera-edge:/status"]
+
+  edge-orchestrator:
+    <<: *common
+    image: ${EDGE_ORCHESTRATOR_IMAGE:-ajin-edge-orchestrator:0.1.0}
+    command: ["--config", "/config/edge.json", "--status-dir", "/status",
+      "--own-status-dir", "/own-status", "--clock-file", "/clock/clock.json",
+      "--url", "${HEARTBEAT_URL:?set HTTPS endpoint}", "--token-file", "/run/secrets/edge_token"]
+    environment:
+      <<: *deployment
+      CONFIG_SHA256: "${CONFIG_SHA256}"
+    secrets: [edge_token]
+    volumes:
+      - ${CONFIG_FILE}:/config/edge.json:ro
+      - ${RUNTIME_DIR}/status:/status:ro
+      - ${RUNTIME_DIR}/orchestrator-status:/own-status
+      - ${RUNTIME_DIR}/clock:/clock:ro
+    healthcheck:
+      test: [CMD, edge-healthcheck, /own-status/edge-orchestrator.json]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+secrets:
+  edge_token:
+    file: ${EDGE_TOKEN_FILE:?set secret file}
+  camera_token:
+    file: ${CAMERA_TOKEN_FILE:?set secret file}

@@ -1,0 +1,32 @@
+name: platform-ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.9.28"
+      - name: Install locked environment
+        run: uv sync --frozen --python 3.13
+      - name: Lint
+        run: uv run --frozen ruff check packages services/lidar-processing/src services/measurement-uplink/src services/edge-orchestrator/src tests integration-tests tools conftest.py
+      - name: Test
+        run: uv run --frozen pytest -q
+      - name: Build distributable
+        run: uv build
+      - name: C++ core configure and test
+        run: |
+          cmake -S services/lidar-driver -B build/core -DAJIN_CORE_ONLY=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/core
+          ctest --test-dir build/core --output-on-failure
+      - name: Compose configuration
+        run: docker compose --env-file deploy/edge.env.example -f deploy/compose.edge.example.yaml config --quiet

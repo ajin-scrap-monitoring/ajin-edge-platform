@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ajin-edge-platform"
+version = "0.1.0"
+description = "Pi-side LiDAR processing, durable delivery and independent orchestration"
+requires-python = ">=3.13,<3.14"
+dependencies = ["numpy>=2.2,<3", "grpcio>=1.70,<2", "protobuf>=6.31,<7", "httpx>=0.28,<0.29", "jsonschema>=4.23,<5"]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<9", "pytest-asyncio>=0.25,<1", "grpcio-tools>=1.70,<2", "ruff>=0.11,<1", "cryptography>=44,<47", "websockets>=13,<14"]
+
+[project.scripts]
+lidar-processing = "ajin_lidar_processing.runtime:main"
+measurement-uplink = "ajin_measurement_uplink.runtime:main"
+edge-orchestrator = "ajin_edge_orchestrator.runtime:main"
+edge-healthcheck = "ajin_edge.status:main"
+edge-replay = "ajin_lidar_processing.replay:main"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "packages/edge-common/src/ajin_edge",
+  "services/lidar-processing/src/ajin_lidar_processing",
+  "services/measurement-uplink/src/ajin_measurement_uplink",
+  "services/edge-orchestrator/src/ajin_edge_orchestrator",
+]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "packages/edge-common/src/ajin_edge",
+  "services/lidar-processing/src/ajin_lidar_processing",
+  "services/measurement-uplink/src/ajin_measurement_uplink",
+  "services/edge-orchestrator/src/ajin_edge_orchestrator",
+  "pyproject.toml", "uv.lock", "README.md",
+]
+exclude = ["**/__pycache__/**", "**/*.pyc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "integration-tests/tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"packages/edge-common/src/ajin_edge/wire/*" = ["ALL"]

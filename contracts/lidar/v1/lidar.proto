@@ -1,0 +1,26 @@
+syntax = "proto3";
+package ajin.edge.lidar.v1;
+
+message ScanSample {
+  uint32 angle_mdeg = 1;
+  uint32 distance_mm = 2;
+  uint32 quality = 3;
+}
+message ScanFrame {
+  string schema_version = 1;
+  string edge_id = 2;
+  string sensor_id = 3;
+  uint64 sequence = 4;
+  int64 acquired_at_unix_ms = 5;
+  uint64 acquired_monotonic_ns = 6;
+  string sdk_status = 7;
+  double scan_hz = 8;
+  repeated ScanSample samples = 9;
+  // Required by v1 consumers: sequence is scoped to this process instance.
+  string instance_id = 10;
+  string config_revision = 11;
+}
+message SubscribeRequest { string consumer_id = 1; }
+service LidarScanSource {
+  rpc SubscribeScans(SubscribeRequest) returns (stream ScanFrame);
+}

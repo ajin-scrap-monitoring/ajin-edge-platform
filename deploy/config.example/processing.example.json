@@ -1,0 +1,180 @@
+{
+  "schema_version": "1.0",
+  "site_id": "demo-site",
+  "edge_id": "demo-edge",
+  "config_revision": "demo-r1",
+  "camera_id": "demo-camera",
+  "deployment_revision": "demo-release-1",
+  "service_versions": {
+    "lidar-driver-a": "1.0.0", "lidar-driver-b": "1.0.0",
+    "lidar-processing": "0.1.0", "measurement-uplink": "0.1.0",
+    "edge-orchestrator": "0.1.0", "camera-edge": "0.1.0"
+  },
+  "allow_demo_calibration": false,
+  "calibration": {
+    "version": "DEMO-NOT-FIELD-CALIBRATED",
+    "demo": true,
+    "fusion_map": [
+      [
+        0,
+        0
+      ],
+      [
+        1,
+        1
+      ]
+    ],
+    "single_sensor_maps": {},
+    "candidate_hints": {
+      "window_seconds": 2, "rapid_rise_ratio": 0.2,
+      "collection_drop_ratio": 0.2, "coverage_drop_ratio": 0.2,
+      "occlusion_change_mm": 20, "occlusion_width_mm": [50, 100],
+      "occlusion_shift_mm": [50, 150]
+    }
+  },
+  "processing": {
+    "target_scan_hz": 10
+  },
+  "sensors": [
+    {
+      "sensor_id": "lidar-a",
+      "endpoint": "unix:/sockets/a/lidar-a.sock",
+      "sample_filter": {"distance_min_mm": 1, "distance_max_mm": 100000, "quality_min": 10, "angle_interval_mdeg": [0, 90000]},
+      "base_weight": 0.5,
+      "calibration": {
+        "rotation": [
+          [
+            1,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            -1,
+            0
+          ]
+        ],
+        "translation_mm": [
+          0,
+          0,
+          0
+        ],
+        "roi_x_mm": [
+          0,
+          200
+        ],
+        "roi_z_mm": [
+          0,
+          1000
+        ],
+        "roi_polygon_xz_mm": [
+          [
+            0,
+            0
+          ],
+          [
+            200,
+            0
+          ],
+          [
+            200,
+            1000
+          ],
+          [
+            0,
+            1000
+          ]
+        ],
+        "masks_x_mm": [],
+        "mask_polygons_xz_mm": [],
+        "bottom_mm": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "max_height_mm": [
+          100,
+          100,
+          100,
+          100
+        ]
+      }
+    },
+    {
+      "sensor_id": "lidar-b",
+      "endpoint": "unix:/sockets/b/lidar-b.sock",
+      "sample_filter": {"distance_min_mm": 1, "distance_max_mm": 100000, "quality_min": 10, "angle_interval_mdeg": [0, 90000]},
+      "base_weight": 0.5,
+      "calibration": {
+        "rotation": [
+          [
+            1,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            -1,
+            0
+          ]
+        ],
+        "translation_mm": [
+          0,
+          0,
+          0
+        ],
+        "roi_x_mm": [
+          0,
+          200
+        ],
+        "roi_z_mm": [
+          0,
+          1000
+        ],
+        "roi_polygon_xz_mm": [
+          [
+            0,
+            0
+          ],
+          [
+            200,
+            0
+          ],
+          [
+            200,
+            1000
+          ],
+          [
+            0,
+            1000
+          ]
+        ],
+        "masks_x_mm": [],
+        "mask_polygons_xz_mm": [],
+        "bottom_mm": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "max_height_mm": [
+          100,
+          100,
+          100,
+          100
+        ]
+      }
+    }
+  ]
+}

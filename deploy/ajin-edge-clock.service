@@ -1,0 +1,18 @@
+[Unit]
+Description=Read-only Ajin edge clock snapshot exporter
+After=chrony.service
+
+[Service]
+Type=simple
+User=10001
+Group=10001
+ExecStart=/usr/bin/python3 /opt/ajin/ajin-edge-platform/tools/export_clock.py --output /opt/ajin/runtime/clock/clock.json
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ajin/runtime/clock
+
+[Install]
+WantedBy=multi-user.target

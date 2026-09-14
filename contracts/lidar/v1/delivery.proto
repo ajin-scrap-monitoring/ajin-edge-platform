@@ -1,0 +1,12 @@
+syntax = "proto3";
+package ajin.edge.delivery.v1;
+
+message EnqueueRequest { bytes measurement_json = 1; }
+message EnqueueReply {
+  string measurement_id = 1;
+  bool duplicate = 2;
+}
+service MeasurementSink {
+  // OK means a validated envelope was durably committed, not delivered remotely.
+  rpc Enqueue(EnqueueRequest) returns (EnqueueReply);
+}

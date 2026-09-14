@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ajin:edge:measurement:1.0",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "measurement_id",
+    "measurement_cycle_id",
+    "site_id",
+    "edge_id",
+    "measured_at",
+    "calibration_version",
+    "config_revision",
+    "quality",
+    "sensors"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "measurement_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "measurement_cycle_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "edge_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "calibration_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "config_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "measured_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "quality": {
+      "type": "object",
+      "required": [
+        "state",
+        "confidence",
+        "reason_codes"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "GOOD",
+            "DEGRADED",
+            "INVALID"
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "fill_ratio": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "fill_percent": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "sensors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "sensor_id",
+          "sequence",
+          "valid_sample_ratio",
+          "coverage_ratio",
+          "state"
+        ],
+        "properties": {
+          "sensor_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "instance_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "section_fill_ratio": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "valid_sample_ratio": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "coverage_ratio": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "median_height_mm": {
+            "type": "number"
+          },
+          "p90_height_mm": {
+            "type": "number"
+          },
+          "state": {
+            "enum": [
+              "GOOD",
+              "DEGRADED",
+              "INVALID"
+            ]
+          }
+        }
+      },
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "camera_reference": {
+      "type": "object",
+      "required": [
+        "camera_id",
+        "window_start",
+        "window_end"
+      ],
+      "properties": {
+        "camera_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "window_start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "window_end": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "quality": {
+            "properties": {
+              "state": {
+                "const": "INVALID"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "fill_ratio"
+              ]
+            },
+            {
+              "required": [
+                "fill_percent"
+              ]
+            }
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "fill_ratio",
+          "fill_percent"
+        ]
+      }
+    }
+  ],
+  "additionalProperties": false
+}
