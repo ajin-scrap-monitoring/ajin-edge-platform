@@ -133,11 +133,10 @@ def is_jpeg(data: bytes) -> bool:
 
 
 class WssPublisher:
-    async def publish_once(self, slot: LatestFrameSlot, websocket: WebSocketLike) -> bool:
-        latest = slot.latest()
-        if latest is None:
+    async def publish_once(self, frame: bytes | None, websocket: WebSocketLike) -> bool:
+        """Send the immutable frame selected by the stream loop, without rereading capture."""
+        if frame is None:
             return False
-        _, frame = latest
         await websocket.send(frame)
         return True
 

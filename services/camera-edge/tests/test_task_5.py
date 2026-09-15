@@ -504,10 +504,9 @@ class StopAfterOnePublisher:
     def __init__(self) -> None:
         self.frames: list[bytes] = []
 
-    async def publish_once(self, slot: LatestFrameSlot, websocket: RecordingWebSocket) -> bool:
-        latest = slot.latest()
-        assert latest is not None
-        self.frames.append(latest[1])
+    async def publish_once(self, frame: bytes | None, websocket: RecordingWebSocket) -> bool:
+        assert frame is not None
+        self.frames.append(frame)
         raise StopAsyncIteration
 
 
@@ -517,10 +516,9 @@ class SlowStopPublisher:
         self.send_started = threading.Event()
         self.release = threading.Event()
 
-    async def publish_once(self, slot: LatestFrameSlot, websocket: RecordingWebSocket) -> bool:
-        latest = slot.latest()
-        assert latest is not None
-        self.frames.append(latest[1])
+    async def publish_once(self, frame: bytes | None, websocket: RecordingWebSocket) -> bool:
+        assert frame is not None
+        self.frames.append(frame)
         self.send_started.set()
         await asyncio.to_thread(self.release.wait, 1.0)
         raise StopAsyncIteration
@@ -531,9 +529,8 @@ class HoldingPublisher:
         self.sent = threading.Event()
         self.release = threading.Event()
 
-    async def publish_once(self, slot: LatestFrameSlot, websocket: RecordingWebSocket) -> bool:
-        latest = slot.latest()
-        assert latest is not None
+    async def publish_once(self, frame: bytes | None, websocket: RecordingWebSocket) -> bool:
+        assert frame is not None
         self.sent.set()
         await asyncio.to_thread(self.release.wait, 1.0)
         return True
@@ -544,7 +541,7 @@ class OutcomesPublisher:
         self._outcomes = iter(outcomes)
         self.calls = 0
 
-    async def publish_once(self, slot: LatestFrameSlot, websocket: RecordingWebSocket) -> bool:
+    async def publish_once(self, frame: bytes | None, websocket: RecordingWebSocket) -> bool:
         self.calls += 1
         outcome = next(self._outcomes)
         if isinstance(outcome, Exception):

@@ -21,6 +21,10 @@ uv run ruff format --check .
 - Python 3.13
 - Source layout under `src/camera_edge`
 - JPEG frames are sent as binary WebSocket messages
+- The stream loop sends the immutable frame paired with its selected generation.
+  `WssPublisher.publish_once` accepts that frame's bytes (or `None`), not the live
+  capture slot. Frames replaced before selection may be skipped; a later capture
+  cannot replace an already selected send or cause that generation to be sent twice.
 - No decoding, re-encoding, recording, or browser delivery is defined here
 - Edge defaults:
   - `/dev/video0`

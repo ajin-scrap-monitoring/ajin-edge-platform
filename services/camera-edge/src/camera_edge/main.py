@@ -21,7 +21,7 @@ class CaptureBoundary(Protocol):
 
 
 class PublisherBoundary(Protocol):
-    async def publish_once(self, slot: LatestFrameSlot, websocket: Any) -> bool: ...
+    async def publish_once(self, frame: bytes | None, websocket: Any) -> bool: ...
 
 
 ConnectCallable = Callable[..., Awaitable[Any]]
@@ -192,7 +192,7 @@ async def run_edge_stream(
                         continue
                     generation, frame = newer
                     sent = await asyncio.wait_for(
-                        publisher.publish_once(slot, websocket),
+                        publisher.publish_once(frame, websocket),
                         timeout=settings.ws_send_timeout_seconds,
                     )
                     if sent:
