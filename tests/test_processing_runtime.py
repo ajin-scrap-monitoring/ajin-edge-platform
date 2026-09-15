@@ -6,6 +6,31 @@ import pytest
 from test_processing import config
 
 
+def test_sensor_channel_uses_uds_compatible_authority(monkeypatch):
+    from ajin_lidar_processing import runtime
+
+    observed = {}
+    sentinel = object()
+
+    def fake_insecure_channel(target, *, options):
+        observed["target"] = target
+        observed["options"] = options
+        return sentinel
+
+    monkeypatch.setattr(runtime.grpc.aio, "insecure_channel", fake_insecure_channel)
+
+    channel = runtime._open_sensor_channel("unix:/sockets/a/lidar-a.sock")
+
+    assert channel is sentinel
+    assert observed == {
+        "target": "unix:/sockets/a/lidar-a.sock",
+        "options": (
+            ("grpc.max_receive_message_length", 4 * 1024 * 1024),
+            ("grpc.default_authority", "localhost"),
+        ),
+    }
+
+
 @pytest.mark.asyncio
 async def test_runtime_absent_sensors_reports_retrying_and_cancels(tmp_path):
     from ajin_lidar_processing.runtime import run

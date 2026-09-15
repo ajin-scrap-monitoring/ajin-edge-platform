@@ -15,6 +15,15 @@ from ajin_edge.wire import delivery_pb2, delivery_pb2_grpc, lidar_pb2, lidar_pb2
 
 from .engine import ProcessingEngine
 
+_SENSOR_CHANNEL_OPTIONS = (
+    ("grpc.max_receive_message_length", 4 * 1024 * 1024),
+    ("grpc.default_authority", "localhost"),
+)
+
+
+def _open_sensor_channel(endpoint):
+    return grpc.aio.insecure_channel(endpoint, options=_SENSOR_CHANNEL_OPTIONS)
+
 
 class PendingQueue:
     def __init__(self, capacity=10):
@@ -64,10 +73,7 @@ async def run(args):
         while not stop.is_set():
             started = time.monotonic()
             try:
-                async with grpc.aio.insecure_channel(
-                    sensor["endpoint"],
-                    options=[("grpc.max_receive_message_length", 4 * 1024 * 1024)],
-                ) as channel:
+                async with _open_sensor_channel(sensor["endpoint"]) as channel:
                     stream = lidar_pb2_grpc.LidarScanSourceStub(channel).SubscribeScans(
                         lidar_pb2.SubscribeRequest(consumer_id=status.instance_id)
                     )

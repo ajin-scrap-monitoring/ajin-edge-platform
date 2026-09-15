@@ -61,6 +61,9 @@ Runtime CLI: `lidar-processing --config PATH --status-dir PATH --clock-file PATH
 subscriptions continue while a ten-envelope FIFO retries durable Enqueue with
 the same ID and a two-second deadline. Overflow drops the oldest pending item
 and counts the loss. Remote acknowledgements must echo the measurement ID.
+Sensor subscription channels use `grpc.default_authority=localhost` so the
+Python gRPC client interoperates with UDS servers that validate HTTP/2 authority.
+The measurement uplink channel does not apply this sensor-only option.
 Status is emitted every second and retains measurement reason codes. Invalid
 calibration writes FATAL/CALIBRATION_INVALID before startup exits, replacing any
 previous healthy instance snapshot. A supervisor should use status freshness for
