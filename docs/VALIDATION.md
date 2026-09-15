@@ -15,12 +15,18 @@ uv build
 플랫폼 CI는 Python 검사·패키징·C++ core 테스트·Compose 구성 검사를 실행한다.
 카메라 CI는 독립 환경 검사와 ARM64 컨테이너 빌드를 실행한다.
 
+`LiDAR processing candidate` workflow는 `main` commit에서만 수동으로 실행한다. 이 workflow는
+`lidar-processing`의 ARM64 image를 빌드하고 runtime UID, source revision label, CLI import와 build
+tool 제외를 검사한다. 게시한 digest를 다시 pull해 같은 검사를 통과해야 후보 image reference를
+artifact로 제공한다.
+
 ## 확인된 범위
 
 - 계약, 좌표 변환, 보정, 센서 단절, 시간, 상태 집계, 합성 리플레이.
 - SQLite durable commit 후 gRPC ACK, 재시작 복구, 중복 및 설정 revision 검증.
 - 로컬 TLS 서버 통신, 인증서 검증, 재시도와 인증 중단.
 - Windows Python 테스트와 Linux AMD64 SDK 드라이버 빌드 및 C++ 테스트.
+- ARM64 `lidar-processing` image의 non-root runtime 및 source revision 검증.
 
 ## 현장 인수와 구분
 

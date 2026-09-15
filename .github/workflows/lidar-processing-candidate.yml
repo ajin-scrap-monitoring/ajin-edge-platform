@@ -1,0 +1,232 @@
+name: LiDAR processing candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lidar-processing-candidate-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify ARM64 candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require main source
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "candidate images must be built from main" >&2
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build local ARM64 candidate
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: services/lidar-processing/Dockerfile
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: ajin-lidar-processing:candidate-verify
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_VERSION=candidate-${{ github.sha }}
+          cache-to: type=gha,mode=max,scope=lidar-processing-candidate
+
+      - name: Verify local candidate
+        run: tests/verify_lidar_processing_image.sh ajin-lidar-processing:candidate-verify "$GITHUB_SHA"
+
+  publish:
+    name: Publish ARM64 candidate
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve candidate reference
+        id: candidate
+        shell: bash
+        run: |
+          image_name="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ajin-edge-platform-lidar-processing"
+          revision_ref="$image_name:sha-$GITHUB_SHA"
+          existing_digest=""
+          publish=""
+          inspect_stdout="$RUNNER_TEMP/candidate-inspect.out"
+          inspect_stderr="$RUNNER_TEMP/candidate-inspect.err"
+          for attempt in 1 2 3; do
+            if docker buildx imagetools inspect "$revision_ref" \
+              --format '{{.Manifest.Digest}}' \
+              >"$inspect_stdout" 2>"$inspect_stderr"; then
+              existing_digest="$(<"$inspect_stdout")"
+              publish="false"
+              break
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              sleep "$((attempt * 2))"
+              continue
+            fi
+            inspect_error="$(<"$inspect_stderr")"
+            if [[ "$inspect_error" == "ERROR: $revision_ref: not found" ]] \
+              || grep -Fqi 'manifest unknown' "$inspect_stderr"; then
+              publish="true"
+              break
+            fi
+            cat "$inspect_stderr" >&2
+            exit 1
+          done
+          if [[ -z "$publish" ]]; then
+            echo "candidate manifest inspection did not reach a decision" >&2
+            exit 1
+          fi
+          {
+            echo "image_name=$image_name"
+            echo "revision_ref=$revision_ref"
+            echo "existing_digest=$existing_digest"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and publish candidate
+        if: steps.candidate.outputs.publish == 'true'
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: services/lidar-processing/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.candidate.outputs.revision_ref }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_VERSION=candidate-${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=lidar-processing-candidate
+
+      - name: Resolve candidate digest
+        id: digest
+        shell: bash
+        env:
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+          EXISTING_DIGEST: ${{ steps.candidate.outputs.existing_digest }}
+        run: |
+          digest="$BUILT_DIGEST"
+          if [[ -z "$digest" ]]; then
+            digest="$EXISTING_DIGEST"
+          fi
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "invalid candidate digest: $digest" >&2
+            exit 1
+          fi
+          echo "value=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Verify published candidate
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ steps.candidate.outputs.image_name }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.value }}
+          REVISION_REF: ${{ steps.candidate.outputs.revision_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tagged_digest="$(
+            docker buildx imagetools inspect "$REVISION_REF" \
+              --format '{{.Manifest.Digest}}'
+          )"
+          if [[ "$tagged_digest" != "$IMAGE_DIGEST" ]]; then
+            echo "candidate tag and selected image resolve to different manifests" >&2
+            exit 1
+          fi
+
+          manifest_path="$RUNNER_TEMP/candidate-manifest.json"
+          docker buildx imagetools inspect --raw "$REVISION_REF" > "$manifest_path"
+          python3 - "$manifest_path" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as source:
+              manifest = json.load(source)
+          runnable_platforms = {
+              (
+                  entry.get("platform", {}).get("os"),
+                  entry.get("platform", {}).get("architecture"),
+              )
+              for entry in manifest.get("manifests", ())
+              if entry.get("platform", {}).get("os") != "unknown"
+          }
+          if runnable_platforms != {("linux", "arm64")}:
+              raise SystemExit(f"unexpected candidate platforms: {sorted(runnable_platforms)}")
+          PY
+
+          package_name="${IMAGE_NAME##*/}"
+          visibility=""
+          for _ in 1 2 3 4 5; do
+            visibility="$(
+              gh api "/orgs/$GITHUB_REPOSITORY_OWNER/packages/container/$package_name" \
+                --jq .visibility 2>/dev/null || true
+            )"
+            if [[ "$visibility" == "public" ]]; then
+              break
+            fi
+            sleep 5
+          done
+          if [[ "$visibility" != "public" ]]; then
+            echo "GHCR package visibility is not public: ${visibility:-unavailable}" >&2
+            exit 1
+          fi
+
+          docker pull --platform linux/arm64 "$IMAGE_NAME@$IMAGE_DIGEST"
+          tests/verify_lidar_processing_image.sh \
+            "$IMAGE_NAME@$IMAGE_DIGEST" "$GITHUB_SHA"
+
+          install -d dist
+          printf '%s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST" \
+            > dist/lidar-processing-candidate-image.txt
+          printf '%s\n' "$GITHUB_SHA" \
+            > dist/lidar-processing-candidate-source-sha.txt
+
+      - name: Upload candidate reference
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lidar-processing-candidate-${{ github.sha }}
+          path: |
+            dist/lidar-processing-candidate-image.txt
+            dist/lidar-processing-candidate-source-sha.txt
+          if-no-files-found: error
+          retention-days: 30

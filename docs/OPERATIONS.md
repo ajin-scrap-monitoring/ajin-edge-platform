@@ -27,8 +27,12 @@ INVALID/시간창 만료 뒤에는 이전 fill을 비교 기준으로 사용하�
 프로젝트 상위가 아니라 `ajin-edge-platform` 저장소 루트에서 실행하는 예:
 
 ```shell
+SOURCE_REVISION="$(git rev-parse --verify HEAD)"
 docker build --platform linux/arm64 -f services/lidar-driver/Dockerfile -t ajin-lidar-driver:0.1.0 .
-docker build --platform linux/arm64 -f services/lidar-processing/Dockerfile -t ajin-lidar-processing:0.1.0 .
+docker build --platform linux/arm64 -f services/lidar-processing/Dockerfile \
+  --build-arg "SOURCE_REVISION=$SOURCE_REVISION" \
+  --build-arg SOURCE_VERSION=0.1.0 \
+  -t ajin-lidar-processing:0.1.0 .
 docker build --platform linux/arm64 -f services/measurement-uplink/Dockerfile -t ajin-measurement-uplink:0.1.0 .
 docker build --platform linux/arm64 -f services/edge-orchestrator/Dockerfile -t ajin-edge-orchestrator:0.1.0 .
 docker build --platform linux/arm64 -t ajin-camera-edge:0.1.0 services/camera-edge
@@ -40,6 +44,12 @@ SDK는 고정 SHA, Python은 uv.lock으로 잠근다. Debian apt와 base image t
 릴리스에서 빌드한 OCI 이미지의 digest를 기록하고 Compose 환경변수에 image@sha256:…를 넣는다.
 같은 소스에서 bit-for-bit 재빌드를 보장하지 않는다. 오프라인은 docker image save/load와
 이미지 digest/설정 SHA256 manifest를 함께 전달한다.
+
+`LiDAR processing candidate` workflow는 원격 `main` commit에서 ARM64 image만 게시한다. Source tag는
+`sha-<full-git-sha>`이며 `latest` tag는 게시하지 않는다. Workflow artifact의 digest reference를
+Compose의 `LIDAR_PROCESSING_IMAGE`에 넣는다. Package는
+`ghcr.io/ajin-scrap-monitoring/ajin-edge-platform-lidar-processing`이고 public pull에는 자격 증명이
+필요하지 않다. Dockerfile은 Python과 uv image를 digest로 고정하고 uv를 builder stage에만 둔다.
 
 prepare_runtime는 새 전용 디렉터리만 준비하며 비밀키나 보정값을 생성하지 않는다.
 Linux에서는 관리자 권한으로 실행해야 uid/gid 10001 소유권 설정을 적용할 수 있다.
