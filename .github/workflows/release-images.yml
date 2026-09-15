@@ -1,0 +1,183 @@
+name: release-images
+
+on:
+  pull_request:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    outputs:
+      revision: ${{ steps.source.outputs.revision }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: source
+        name: Verify source and release tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [ "$REF_TYPE" = tag ]; then
+            python3 -c 'import sys; sys.path.insert(0, "tools"); from release_metadata import validate_version; validate_version(sys.argv[1])' "$TAG"
+            git merge-base --is-ancestor HEAD origin/main
+          fi
+      - name: Reject already published releases
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name' > "$RUNNER_TEMP/published-release-tags"
+          if grep -Fxq -- "$TAG" "$RUNNER_TEMP/published-release-tags"; then
+            echo 'A published release must not be rebuilt. Choose a new version.' >&2
+            exit 1
+          fi
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: '0.9.28'
+      - run: uv sync --frozen --python 3.13.11
+      - run: uv run --frozen pytest -q -p no:cacheprovider
+      - run: uv run --frozen ruff check packages services/lidar-processing/src services/measurement-uplink/src services/edge-orchestrator/src tests integration-tests tools conftest.py
+      - run: uv sync --project services/camera-edge --frozen --extra dev --python 3.13.11
+      - run: uv run --project services/camera-edge --frozen pytest services/camera-edge/tests -q -p no:cacheprovider
+      - run: uv run --project services/camera-edge --frozen ruff check services/camera-edge
+      - run: uv run --project services/camera-edge --frozen ruff format --check services/camera-edge
+      - name: SDK cleanup with AddressSanitizer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libgrpc++-dev protobuf-compiler-grpc libprotobuf-dev nlohmann-json3-dev
+          cmake -S services/lidar-driver -B build/asan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS='-fsanitize=address -fno-omit-frame-pointer' -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address
+          cmake --build build/asan --target sdk_cleanup_test core_test -j2
+          ASAN_OPTIONS=detect_leaks=1 ctest --test-dir build/asan --output-on-failure
+
+  build:
+    needs: verify
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [lidar-driver, lidar-processing, measurement-uplink, edge-orchestrator, camera-edge]
+    env:
+      SERVICE: ${{ matrix.service }}
+      REVISION: ${{ needs.verify.outputs.revision }}
+      VERSION: ${{ github.ref_name }}
+      IMAGE: ghcr.io/ajin-scrap-monitoring/ajin-${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Check existing package privacy
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 tools/check_package_private.py "$SERVICE"
+      - id: context
+        run: |
+          if [ "$SERVICE" = camera-edge ]; then
+            echo 'path=services/camera-edge' >> "$GITHUB_OUTPUT"
+          else
+            echo 'path=.' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.context.outputs.path }}
+          file: services/${{ matrix.service }}/Dockerfile
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:sha-${{ env.REVISION }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/ajin-scrap-monitoring/ajin-edge-platform
+            org.opencontainers.image.revision=${{ env.REVISION }}
+      - name: Verify runtime identity and startup
+        run: |
+          test "$(docker image inspect "$IMAGE:sha-$REVISION" --format '{{.Architecture}}')" = arm64
+          test "$(docker run --rm --network none --entrypoint id "$IMAGE:sha-$REVISION" -u)" = 10001
+          if [ "$SERVICE" = lidar-driver ]; then
+            # The native CLI requires deployment arguments and has no --help flag.
+            set +e
+            OUTPUT=$(docker run --rm --network none "$IMAGE:sha-$REVISION" 2>&1)
+            CODE=$?
+            set -e
+            test "$CODE" = 2
+            echo "$OUTPUT" | grep -F 'missing --sensor-id'
+          elif [ "$SERVICE" != camera-edge ]; then
+            docker run --rm --network none "$IMAGE:sha-$REVISION" --help
+          else
+            docker run --rm --network none --read-only --tmpfs /tmp --entrypoint /app/.venv/bin/python \
+              -v "$PWD/services/camera-edge/tests/entrypoint_smoke.py:/tmp/entrypoint_smoke.py:ro" \
+              "$IMAGE:sha-$REVISION" /tmp/entrypoint_smoke.py
+          fi
+      - uses: docker/login-action@v3
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish verified image
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker tag "$IMAGE:sha-$REVISION" "$IMAGE:$VERSION"
+          docker push "$IMAGE:sha-$REVISION"
+          python3 tools/check_package_private.py "$SERVICE"
+          docker push "$IMAGE:$VERSION"
+          REF=$(docker image inspect "$IMAGE:$VERSION" --format '{{index .RepoDigests 0}}')
+          export DIGEST="${REF#*@}"
+          mkdir -p manifest
+          python3 -c 'import json, os; from pathlib import Path; Path("manifest/" + os.environ["SERVICE"] + ".json").write_text(json.dumps({k.lower(): os.environ[k] for k in ("SERVICE", "IMAGE", "DIGEST", "REVISION", "VERSION")}))'
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        with:
+          name: image-${{ matrix.service }}
+          path: manifest/*.json
+          if-no-files-found: error
+
+  manifest:
+    needs: [verify, build]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: manifest
+      - name: Assemble complete release
+        env:
+          VERSION: ${{ github.ref_name }}
+          REVISION: ${{ needs.verify.outputs.revision }}
+        run: python3 tools/release_metadata.py --version "$VERSION" --revision "$REVISION" --input manifest --output release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: release/*
+      - name: Attach deployment references to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release create "$VERSION" --verify-tag --title "$VERSION" --notes 'ARM64 edge service images. Use the attached digest-pinned references; device updates require separate approval.'
+          fi
+          gh release upload "$VERSION" release/release-manifest.json release/images.env

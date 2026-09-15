@@ -30,3 +30,6 @@ jobs:
           ctest --test-dir build/core --output-on-failure
       - name: Compose configuration
         run: docker compose --env-file deploy/edge.env.example -f deploy/compose.edge.example.yaml config --quiet
+      # AJIN_CORE_ONLY excludes the SDK cleanup regression; also build the full SDK.
+      - name: Full driver SDK regression
+        run: docker build -f services/lidar-driver/Dockerfile -t ajin-lidar-driver:ci .
