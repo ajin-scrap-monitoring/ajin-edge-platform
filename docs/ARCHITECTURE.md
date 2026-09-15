@@ -48,7 +48,7 @@ USB MJPEG → camera-edge → Binary JPEG / WSS → 별도 camera-media-service
 | camera-edge | `services/camera-edge/src/camera_edge/` | USB MJPEG 캡처, JPEG 그대로 WSS 송신, backoff, 선택적 상태 파일 | native 캡처 stall·USB hotplug·실제 촬영 지연 |
 | edge-orchestrator | `services/edge-orchestrator/src/ajin_edge_orchestrator/` | 서비스/릴리스/카메라 식별 확인, 종합 상태, 최신 Heartbeat | 실제 운영 감시·알림 수신자·시간창 상관 검증 |
 | 공통 Python | `packages/edge-common/src/ajin_edge/` | 설정/체크섬, 상태 파일, 시각 분류, HTTPS, JSON 계약, 생성된 protobuf | 버전 일치·릴리스별 계약 회귀 유지 |
-| 호스트 도구 | `tools/export_clock.py`, `tools/prepare_runtime.py` | chrony 읽기, 전용 runtime 권한/디렉터리 준비 | 호스트 설치·장치 권한·systemd 인수 |
+| 호스트 도구 | `tools/export_clock.py`, `tools/prepare_runtime.py` | chrony 또는 timesyncd 읽기, 전용 runtime 권한/디렉터리 준비 | 호스트 설치·장치 권한·systemd 인수 |
 
 `ajin_edge`는 공통 import 이름이며 서비스 패키지는 각각 `ajin_lidar_processing`,
 `ajin_measurement_uplink`, `ajin_edge_orchestrator`다. CLI 이름은 `lidar-processing`,
@@ -78,7 +78,7 @@ CONFIG_ERROR로 집계한다. 전체 판정과 서버 응답 형식은 [BACKEND_
 - Outbox는 건수·용량·보존 상한을 가진다. 장시간 단절 시 폐기가 가능하며 손실 ID/수신 UTC 범위를 기록한다.
 - 재시도는 monotonic 시간이고, 24시간 보존 나이는 실행 중 누적 시간이다. 정지 시간은 제외되므로
   달력 기준 최대 24시간 보존 보장이 아니다. 상세 한계는 [구현 결정](IMPLEMENTATION_DECISIONS.md)에 있다.
-- 호스트 chrony 상태가 미확인이면 UNSYNCED. 시각 오차가 작을 때만 영상 검색 시간창을 첨부한다.
+- 선택한 호스트 시각 소스(chrony/timesyncd)가 미확인이면 UNSYNCED. 시각 오차가 작을 때만 영상 검색 시간창을 첨부한다.
 - Compose healthcheck는 자동 재시작 트리거가 아니다. 프로세스 내부 watchdog과 운영 경보가 별개로 필요하다.
 - HTTPS 인증 실패는 FATAL로 보이며 키를 변경/재시작해야 한다. 토큰이나 운영 DB는 Git에 넣지 않는다.
 
@@ -97,7 +97,7 @@ CONFIG_ERROR로 집계한다. 전체 판정과 서버 응답 형식은 [BACKEND_
 | P1 | 급변/가림 후보 규칙 검증 | `calibration.candidate_hints` | 실제 사례별 오탐/미탐 기록과 임계치 승인; 없으면 비활성 상태 명시 | 현장 이벤트 표본 |
 | P1 | Pi 장시간 부하·운영 관측 | services / 호스트 운영 | 1Hz 처리 지연, CPU/RAM/온도, 8시간 누수/재시작, 디스크 상한 확인 | 운영 부하·전원 조건 |
 | P1 | 영상 시간창 종단 연결 | 측정 camera_reference ↔ 영상 서버 | 동기/비동기 조건별 실제 촬영 구간 조회 시험 | 미디어 녹화·조회 API와 백엔드 이벤트 계약 |
-| P1 | 릴리스/업데이트·롤백 자동화 | `.github/workflows` 또는 운영 CI, `deploy/` | ARM64 빌드/테스트, 이미지 digest manifest, Outbox 보존 업데이트·롤백 시험 | GitHub org/권한/registry/배포 주체 |
+| P1 | 릴리스 게시·업데이트·롤백 인수 | `.github/workflows/release-images.yml`, `deploy/` | 자동 ARM64 빌드/검사와 digest manifest는 구현; 첫 private 게시와 Outbox 보존 업데이트·롤백 시험 필요 | 승인된 릴리스 태그·registry 권한·배포 주체 |
 | 조건부 | 복잡한 고정 마스크 | processing | 전체 높이·bin 정렬 사각형 외 형상이 필요할 때만 면적 처리 추가 및 정확도 시험 | 현장 가림 형상 |
 
 P0는 현장 연결을 시작하기 위한 선행 조건이고 P1도 운영 인수 전에 필요한 항목이다.
@@ -113,6 +113,8 @@ P0는 현장 연결을 시작하기 위한 선행 조건이고 P1도 운영 인�
 `camera-ci.yml`은 기존 카메라 검사와 ARM64 이미지 빌드를 정의한다. 카메라 CI는 서비스 안의
 `.github`가 아니라 저장소 루트로 이동했다. 미디어 저장소의 기존 CI는 자체 루트에 유지한다.
 GitHub CI 결과는 커밋별 Actions 실행에서 확인한다. 소스 공개와 현장 배포 승인은 별개다.
+`release-images.yml`은 PR에서 이미지 5종을 검증하고 승인된 버전 태그 push 시 private GHCR에
+게시한다. 자동 디바이스 업데이트는 하지 않는다. 조건과 한계는 [릴리스 절차](RELEASE.md)를 따른다.
 
 ## 8. 검증 범위
 

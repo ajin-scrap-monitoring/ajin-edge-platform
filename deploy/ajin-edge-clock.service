@@ -1,11 +1,14 @@
 [Unit]
 Description=Read-only Ajin edge clock snapshot exporter
-After=chrony.service
+After=chrony.service systemd-timesyncd.service
 
 [Service]
 Type=simple
 User=10001
 Group=10001
+# Provision a real host service account with this UID/GID before installation.
+# For systemd-timesyncd, append --source timesyncd to ExecStart.
+# Verify read-only D-Bus access as that account; never mount the system bus in containers.
 ExecStart=/usr/bin/python3 /opt/ajin/ajin-edge-platform/tools/export_clock.py --output /opt/ajin/runtime/clock/clock.json
 Restart=on-failure
 RestartSec=5

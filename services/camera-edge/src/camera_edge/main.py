@@ -289,10 +289,6 @@ def main() -> None:
     asyncio.run(async_main())
 
 
-if __name__ == "__main__":
-    main()
-
-
 async def _close_maybe_awaitable(target: Any) -> None:
     close = getattr(target, "close", None)
     if close is None:
@@ -440,3 +436,7 @@ def _log_stats(stats_interval_seconds: int, stats: StreamStats, *, camera_id: st
             **stats.snapshot(),
         },
     )
+
+
+if __name__ == "__main__":
+    main()

@@ -35,7 +35,7 @@ docker build --platform linux/arm64 -t ajin-camera-edge:0.1.0 services/camera-ed
 python3 tools/prepare_runtime.py --root /opt/ajin/runtime
 ```
 
-이 명령은 인계용이며 현재 호스트에서 Docker 이미지 빌드를 실행 성공한 것은 아니다.
+이 명령은 인계용이다. ARM64 실장비 시험 범위와 배포 인수의 차이는 [검증 기록](VALIDATION.md)을 따른다.
 SDK는 고정 SHA, Python은 uv.lock으로 잠근다. Debian apt와 base image tag는 가변이므로 실제
 릴리스에서 빌드한 OCI 이미지의 digest를 기록하고 Compose 환경변수에 image@sha256:…를 넣는다.
 같은 소스에서 bit-for-bit 재빌드를 보장하지 않는다. 오프라인은 docker image save/load와
@@ -47,9 +47,24 @@ Linux에서는 관리자 권한으로 실행해야 uid/gid 10001 소유권 설�
 설정한다(소유자/그룹, 예: 0440). Compose file secret은 파일 bind mount이므로 이미지의 UID와
 호스트 권한이 맞아야 한다. USB video 장치의 호스트 group ID를 VIDEO_GID에 지정한다.
 
-호스트에서 chrony를 운영하고 `tools/export_clock.py`를 실행한다. 제공 systemd 예제는
-`/opt/ajin/ajin-edge-platform`, uid10001을 전제로 한다. exporter는 chrony monitoring만 읽으며
-NTP 서버 설정이나 시스템 시간을 바꾸지 않는다. exporter/chrony 실패·파일 stale은 UNSYNCED다.
+호스트의 실제 시각 서비스에 맞춰 `tools/export_clock.py`를 실행한다. 기본값은 chrony이며,
+systemd-timesyncd 호스트는 `--source timesyncd`를 명시한다. 두 소스 간 자동 fallback은 없다.
+제공 systemd 예제는 `/opt/ajin/ajin-edge-platform`, uid/gid 10001을 전제로 한다.
+설치 전 동일 UID/GID의 실제 호스트 서비스 계정 존재 여부와 경로 접근 권한을 확인한다.
+이미 사용 중인 UID를 다른 계정에 재할당하지 않는다. 숫자 UID만 있는 컨테이너 사용자를
+호스트 서비스 사용자로 간주하면 D-Bus 조회가 거부될 수 있다.
+timesyncd는 해당 계정으로 `timedatectl show -p NTPSynchronized --value`와
+`busctl --json=short get-property org.freedesktop.timesync1 /org/freedesktop/timesync1 org.freedesktop.timesync1.Manager NTPMessage`
+읽기가 되는지 먼저 확인한다. system bus를 컨테이너에 마운트하거나 권한을 일괄 개방하지 않는다.
+
+exporter는 NTP 설정·시스템 시각을 변경하지 않는다. timesyncd의 마지막 NTP 교환으로
+offset을 계산하며 동기화 flag만 보고 0ms를 만들지 않는다. 동기화 해제·spike·잘못된 응답·
+조회 실패는 UNSYNCED다. NTP 표본은 poll 간격의 2배(최소 60초, 최대 3600초)까지만 인정하며,
+exporter 출력 파일 자체는 기존 30초 freshness 검사를 유지한다.
+offset은 마지막 교환에서 측정한 보정량이지 현재 오차의 연속적인 보증이나 카메라 노출시각의
+보증이 아니다. 엄격한 시간 정합 인수는 별도 수행한다.
+구조와 계산 근거: [systemd NTPMessage 구현](https://github.com/systemd/systemd/blob/main/src/timesync/timesyncd-bus.c),
+[timedatectl 구현](https://github.com/systemd/systemd/blob/main/src/timedate/timedatectl.c).
 
 ## 3. Compose 설정 검증과 실행
 
@@ -101,16 +116,16 @@ oldest_pending_unix는 수신 UTC, oldest_pending_age_seconds는 이 누적 나�
 first_lost_id/last_lost_id와 loss_range_start_unix/end_unix는 재시작 뒤에도 유지되는
 전체 손실 레코드의 수신 UTC 범위이며, 시각 보정이 있으면 측정 순서를 뜻하지 않는다.
 
-## 5. 현장 인수 Gate (미실행)
+## 5. 현장 인수 Gate
 
 - [x] WSL Ubuntu 24.04 AMD64 SDK+gRPC 전체 빌드, ctest 1/1 및 무장치 UDS/SDK_RETRY/SIGTERM 확인
-- [ ] ARM64 컨테이너 기동/권한 확인
+- [x] ARM64 이미지 5종 빌드, UID 10001 및 기본 실행 검사 (실장비/호스트 권한 인수와 구분)
 - [ ] S2E 2대 30분 동시 수집, UDP 소켓/주소 충돌 및 실제 scan_hz 확인
 - [ ] A/B 개별 단절·복구, 두 센서 단절, 카메라 단절, orchestrator 재시작 중 상호 영향 확인
 - [ ] 승인된 단일센서 보정표로 2초 내 DEGRADED 전환, stale fill 없음
 - [ ] Pi CPU/RAM/온도/전원/대역폭, 실제 샘플수에서 1Hz 처리, 8시간 누수·restart 관찰
 - [ ] 서버 30분 단절 및 복구, ACK 유실 중복 제거, Outbox 최대 건수/물리 파일 사용량
-- [ ] chrony 동기/시각 점프, 카메라 실제 촬영·수신 지연, 영상 검색 시간창 검증
+- [ ] 선택한 chrony/timesyncd 호스트 서비스 설치·시각 점프, 카메라 실제 촬영·수신 지연, 영상 검색 시간창 검증
 - [ ] 고정 적재 상태 20회 반복의 P95 범위 ≤5 percentage points (초기 목표)
 - [ ] 보정에 사용하지 않은 현장 단계에서 평균 절대 오차 ≤10 percentage points (초기 목표)
 - [ ] 백엔드 이벤트/영상 보존/대시보드 종단 통합 및 담당자 승인
