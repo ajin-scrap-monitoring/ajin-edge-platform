@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass
 
 import pytest
@@ -173,13 +174,10 @@ def test_is_jpeg_accepts_only_non_empty_jpeg_bytes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wss_publisher_sends_latest_frame_as_binary_bytes() -> None:
-    slot = LatestFrameSlot()
+async def test_wss_publisher_sends_selected_frame_as_binary_bytes() -> None:
     websocket = RecordingWebSocket()
     publisher = WssPublisher()
-    slot.publish(b"\xff\xd8frame\xff\xd9")
-
-    sent = await publisher.publish_once(slot, websocket)
+    sent = await publisher.publish_once(b"\xff\xd8frame\xff\xd9", websocket)
 
     assert sent is True
     assert websocket.sent_messages == [b"\xff\xd8frame\xff\xd9"]
@@ -190,7 +188,7 @@ async def test_wss_publisher_returns_false_when_no_frame_exists() -> None:
     websocket = RecordingWebSocket()
     publisher = WssPublisher()
 
-    sent = await publisher.publish_once(LatestFrameSlot(), websocket)
+    sent = await publisher.publish_once(None, websocket)
 
     assert sent is False
     assert websocket.sent_messages == []
@@ -263,20 +261,42 @@ async def test_run_edge_stream_publishes_frames_from_capture_to_websocket() -> N
             "CAMERA_TOKEN": "secret",
         }
     )
-    slot = LatestFrameSlot()
-    capture = SequenceCaptureBoundary([b"\xff\xd8frame-1\xff\xd9", b"\xff\xd8frame-2\xff\xd9"])
+    waiting = threading.Event()
+    first_sent = threading.Event()
+
+    class ReadySlot(LatestFrameSlot):
+        def wait_for_newer(self, generation, timeout=None):
+            waiting.set()
+            return super().wait_for_newer(generation, timeout)
+
+    class PacedCapture(SequenceCaptureBoundary):
+        def publish_next(self, slot):
+            if not waiting.is_set() or (self.published_frames and not first_sent.is_set()):
+                return False
+            return super().publish_next(slot)
+
+    class AcknowledgingSocket(RecordingWebSocket):
+        async def send(self, payload):
+            await super().send(payload)
+            first_sent.set()
+
+    slot = ReadySlot()
+    capture = PacedCapture([b"\xff\xd8frame-1\xff\xd9", b"\xff\xd8frame-2\xff\xd9"])
     publisher = RecordingPublisher(stop_after=2)
-    connector = ConnectRecorder()
+    connector = ConnectRecorder(connection=AcknowledgingSocket())
 
     with pytest.raises(StopAsyncIteration):
-        await run_edge_stream(
-            settings,
-            slot=slot,
-            capture=capture,
-            publisher=publisher,
-            connect=connector,
-            backoff=Backoff(base_delay=1.0, max_delay=30.0),
-            sleep=fail_if_called,
+        await asyncio.wait_for(
+            run_edge_stream(
+                settings,
+                slot=slot,
+                capture=capture,
+                publisher=publisher,
+                connect=connector,
+                backoff=Backoff(base_delay=1.0, max_delay=30.0),
+                sleep=fail_if_called,
+            ),
+            timeout=3,
         )
 
     assert capture.published_frames == [b"\xff\xd8frame-1\xff\xd9", b"\xff\xd8frame-2\xff\xd9"]
@@ -373,11 +393,9 @@ class RecordingPublisher:
         self.frames: list[bytes] = []
         self._stop_after = stop_after
 
-    async def publish_once(self, slot: LatestFrameSlot, websocket: RecordingWebSocket) -> bool:
-        latest = slot.latest()
-        if latest is None:
+    async def publish_once(self, frame: bytes | None, websocket: RecordingWebSocket) -> bool:
+        if frame is None:
             return False
-        _, frame = latest
         self.frames.append(frame)
         await websocket.send(frame)
         if len(self.frames) >= self._stop_after:
