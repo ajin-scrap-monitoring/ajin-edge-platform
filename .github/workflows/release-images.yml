@@ -178,6 +178,7 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           if ! gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release create "$VERSION" --verify-tag --title "$VERSION" --notes 'ARM64 edge service images. Use the attached digest-pinned references; device updates require separate approval.'
+            gh release create "$VERSION" --draft --verify-tag --title "$VERSION" --notes 'ARM64 edge service images. Use the attached digest-pinned references; device updates require separate approval.'
           fi
           gh release upload "$VERSION" release/release-manifest.json release/images.env
+          gh release edit "$VERSION" --draft=false
