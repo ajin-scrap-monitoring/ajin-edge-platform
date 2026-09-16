@@ -88,7 +88,7 @@ CONFIG_ERROR로 집계한다. 전체 판정과 서버 응답 형식은 [BACKEND_
 
 | 우선순위 | 남은 작업 | 구현/작업 위치 | 완료 조건 | 필요한 외부 정보 |
 | --- | --- | --- | --- | --- |
-| P0 | ARM64 이미지와 Pi 기본 구동 | 각 Dockerfile, `deploy/` | 6개 컨테이너 기동, UID/볼륨/USB 권한, UDS 연결, 종료·재기동 확인 | Pi OS/장치·현장 네트워크 |
+| P0 | 릴리스 이미지의 현장 배포 | 각 Dockerfile, `deploy/` | ARM64 5종 빌드·기본 실행은 검증 완료; 실제 설정으로 6개 컨테이너 기동, USB/볼륨 권한·UDS 연결·재기동 인수 필요 | Pi OS/장치·현장 네트워크·유지보수 시점 |
 | P0 | 실제 S2E 두 대 수집·좌표 확인 | driver / processing | 30분 동시 스캔, A/B 개별 단절·복구, 실제 각도·단위·설치축 검증 | 모델/펌웨어/IP/장착도 |
 | P0 | 현장 보정 구성 | 운영 config + processing | 빈 상태/기준 적재 단계/별도 검증 단계, 양쪽·단일 센서 보정표 승인 | 측량·기준 적재율·승인자 |
 | P0 | 백엔드 인계 시험 | Uplink/Heartbeat 계약 | 실제 TLS·인증, 저장 후 ACK, ACK 유실·중복, 30분 단절 후 복원 | 측정/Heartbeat URL·키·서버 담당자 |
@@ -97,7 +97,7 @@ CONFIG_ERROR로 집계한다. 전체 판정과 서버 응답 형식은 [BACKEND_
 | P1 | 급변/가림 후보 규칙 검증 | `calibration.candidate_hints` | 실제 사례별 오탐/미탐 기록과 임계치 승인; 없으면 비활성 상태 명시 | 현장 이벤트 표본 |
 | P1 | Pi 장시간 부하·운영 관측 | services / 호스트 운영 | 1Hz 처리 지연, CPU/RAM/온도, 8시간 누수/재시작, 디스크 상한 확인 | 운영 부하·전원 조건 |
 | P1 | 영상 시간창 종단 연결 | 측정 camera_reference ↔ 영상 서버 | 동기/비동기 조건별 실제 촬영 구간 조회 시험 | 미디어 녹화·조회 API와 백엔드 이벤트 계약 |
-| P1 | 릴리스 게시·업데이트·롤백 인수 | `.github/workflows/release-images.yml`, `deploy/` | 자동 ARM64 빌드/검사와 digest manifest는 구현; 첫 private 게시와 Outbox 보존 업데이트·롤백 시험 필요 | 승인된 릴리스 태그·registry 권한·배포 주체 |
+| P1 | 업데이트·롤백 인수 | `.github/workflows/release-images.yml`, `deploy/` | v0.1.1 private 게시·digest manifest 완료; Outbox 보존 업데이트·롤백 시험 필요 | 배포 주체·운영 설정·유지보수 시점 |
 | 조건부 | 복잡한 고정 마스크 | processing | 전체 높이·bin 정렬 사각형 외 형상이 필요할 때만 면적 처리 추가 및 정확도 시험 | 현장 가림 형상 |
 
 P0는 현장 연결을 시작하기 위한 선행 조건이고 P1도 운영 인수 전에 필요한 항목이다.

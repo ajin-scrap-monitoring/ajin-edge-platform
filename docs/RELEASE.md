@@ -1,5 +1,15 @@
 # ARM64 이미지 릴리스
 
+## 게시된 기준 버전
+
+[v0.1.1](https://github.com/ajin-scrap-monitoring/ajin-edge-platform/releases/tag/v0.1.1)은
+서비스 이미지 5종의 private 게시와 두 배포 참조 파일 첨부까지 검증한 기준 릴리스다.
+커밋은 `3004071d0f7363dd310f97ddc58f2350a7f7a4b9`이며 실행 아키텍처는 `linux/arm64`다.
+첨부 `release-manifest.json`과 `images.env`의 digest를 실제 GHCR 이미지와 대조했다.
+v0.1.0은 이미지는 게시됐으나 불변 릴리스의 첨부 순서 문제로 참조 파일을 첨부하지 못했다.
+기존 태그는 보존하고, 새 배포에는 완전한 v0.1.1 결과물을 사용한다.
+릴리스 게시 완료는 현장 배포나 인수 완료를 뜻하지 않는다.
+
 ## 범위
 
 `release-images.yml`은 lidar-driver, lidar-processing, measurement-uplink,
@@ -51,7 +61,7 @@ SHA 이미지 게시 직후에도 private 상태를 다시 확인한 뒤 버전 
 
 카메라 이미지 시작 검사는 실제 모듈 진입점과 종료 정리를 실행하되 장치와 전송 연결을
 대체한다. 실제 USB·WSS, 라이다 센서 연결, 현장 보정, 장시간 부하, 운영 서버 인증·멱등 ACK는
-현장 인수 항목이다. GHCR 게시 성공은 첫 승인된 릴리스 태그 실행 후 별도로 확인해야 한다.
+현장 인수 항목이다. GHCR 첫 게시와 배포 참조 파일 검증은 v0.1.1에서 완료했다.
 
 공식 참고: [GHCR 인증 및 패키지 공개 범위](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry),
 [GitHub-hosted runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
