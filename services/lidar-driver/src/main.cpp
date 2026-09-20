@@ -47,7 +47,7 @@ struct Service:wire::LidarScanSource::Service {
 int main(int argc,char** argv){
  try{
   std::map<std::string,std::string> options;
-  for(int i=1;i<argc;i+=2){if(i+1==argc)throw std::runtime_error("option requires value");std::string key=argv[i];if(!std::regex_match(key,std::regex("--(sensor-id|edge-id|config-revision|ip|port|endpoint|status-dir)"))||options.count(key))throw std::runtime_error("unknown/duplicate option");options[key]=argv[i+1];}
+  for(int i=1;i<argc;i+=2){if(i+1==argc)throw std::runtime_error("option requires value");std::string key=argv[i];if(!std::regex_match(key,std::regex("--(sensor-id|edge-id|config-revision|ip|port|endpoint|status-dir|schema-version)"))||options.count(key))throw std::runtime_error("unknown/duplicate option");options[key]=argv[i+1];}
   auto required=[&](const std::string& key){if(!options.count(key)||options[key].empty())throw std::runtime_error("missing "+key);return options[key];};
   auto sensor=required("--sensor-id"),edge=required("--edge-id"),revision=required("--config-revision"),ip=required("--ip"),endpoint=required("--endpoint"),status_dir=required("--status-dir");
   auto service_name="lidar-driver-"+(sensor.rfind("lidar-",0)==0?sensor.substr(6):sensor);
@@ -64,6 +64,10 @@ int main(int argc,char** argv){
   if(endpoint.rfind("unix:/",0)!=0||endpoint.size()>100)throw std::runtime_error("production endpoint must be UDS");
   int port=8089;if(options.count("--port")){size_t end=0;port=std::stoi(options["--port"],&end);if(end!=options["--port"].size())throw std::runtime_error("invalid port");}if(port<1||port>65535)throw std::runtime_error("invalid port");
   std::ifstream random("/proc/sys/kernel/random/uuid");std::string instance;random>>instance;if(instance.empty())throw std::runtime_error("instance UUID unavailable");
+  const auto schema=options.count("--schema-version")?options["--schema-version"]:"1.0";
+  if(schema!="1.0"&&schema!="2.0")throw std::runtime_error("unsupported schema version");
+  std::ifstream boot_file("/proc/sys/kernel/random/boot_id");std::string boot_id;boot_file>>boot_id;
+  if(schema=="2.0"&&boot_id.empty())throw std::runtime_error("boot clock domain unavailable");
   std::filesystem::create_directories(status_dir);std::filesystem::create_directories(std::filesystem::path(endpoint.substr(5)).parent_path());
   std::signal(SIGTERM,signal_stop);std::signal(SIGINT,signal_stop);umask(0007);
   Service service;grpc::ServerBuilder builder;builder.AddListeningPort(endpoint,grpc::InsecureServerCredentials());builder.RegisterService(&service);builder.SetMaxSendMessageSize(4*1024*1024);
@@ -95,11 +99,18 @@ int main(int argc,char** argv){
     check(driver->startScan(false,true),"start scan");auto stable=steady_clock::now();int64_t previous=0;
     while(!stopping){
      std::vector<sl_lidar_response_measurement_node_hq_t> nodes(32768);size_t count=nodes.size();
-     auto result=driver->grabScanDataHq(nodes.data(),count,1000);progress=monotonic_ns();check(result,"grab scan");
-     if(count==0||count>nodes.size())throw std::runtime_error("invalid HQ count");check(driver->ascendScanData(nodes.data(),count),"ascend scan");
-     auto stamp=monotonic_ns();if(!previous){previous=stamp;continue;}double hz=1e9/double(stamp-previous);previous=stamp;if(!std::isfinite(hz)||hz<=0)throw std::runtime_error("invalid scan rate");
-     auto frame=std::make_shared<wire::ScanFrame>();frame->set_schema_version("1.0");frame->set_edge_id(edge);frame->set_sensor_id(sensor);frame->set_sequence(++sequence);frame->set_acquired_at_unix_ms(unix_ms());frame->set_acquired_monotonic_ns(stamp);frame->set_sdk_status("OK");frame->set_scan_hz(hz);frame->set_instance_id(instance);frame->set_config_revision(revision);
-     for(size_t i=0;i<count;++i){auto value=ajin::convert(nodes[i].angle_z_q14,nodes[i].dist_mm_q2,nodes[i].quality);auto sample=frame->add_samples();sample->set_angle_mdeg(value.angle_mdeg);sample->set_distance_mm(value.distance_mm);sample->set_quality(value.quality);}
+     auto result=driver->grabScanDataHq(nodes.data(),count,1000);
+     // Timestamp completed scan receipt before validation, sorting or coordinate processing.
+     const auto stamp=monotonic_ns();const auto acquired_utc=unix_ms();progress=stamp;check(result,"grab scan");
+     if(count==0||count>nodes.size())throw std::runtime_error("invalid HQ count");
+     // v2 preserves SDK point order; legacy consumers retain the sorted v1 behavior.
+     if(schema=="1.0")check(driver->ascendScanData(nodes.data(),count),"ascend scan");
+     if(!previous&&schema=="1.0"){previous=stamp;continue;}
+     double hz=previous?1e9/double(stamp-previous):0;previous=stamp;
+     if(!std::isfinite(hz)||hz<0)throw std::runtime_error("invalid scan rate");
+     auto frame=std::make_shared<wire::ScanFrame>();frame->set_schema_version(schema);frame->set_edge_id(edge);frame->set_sensor_id(sensor);frame->set_sequence(++sequence);frame->set_acquired_at_unix_ms(acquired_utc);frame->set_acquired_monotonic_ns(stamp);frame->set_sdk_status("OK");frame->set_scan_hz(hz);frame->set_instance_id(instance);frame->set_config_revision(revision);
+     frame->set_scan_id(instance+":"+std::to_string(frame->sequence()));frame->set_clock_domain_id(boot_id);
+     for(size_t i=0;i<count;++i){auto value=schema=="2.0"?ajin::convert_v2(nodes[i].angle_z_q14,nodes[i].dist_mm_q2,nodes[i].quality):ajin::convert(nodes[i].angle_z_q14,nodes[i].dist_mm_q2,nodes[i].quality);auto sample=frame->add_samples();sample->set_angle_mdeg(value.angle_mdeg);sample->set_distance_mm(value.distance_mm);sample->set_quality(value.quality);sample->set_sdk_invalid_range(nodes[i].dist_mm_q2==0);}
      service.ring.push(frame);last_scan=frame->acquired_at_unix_ms();state=1;progress=stamp;
      if(steady_clock::now()-stable>=seconds(30))delay=1;
     }

@@ -9,6 +9,9 @@ struct Sample { uint32_t angle_mdeg,distance_mm,quality; };
 inline Sample convert(uint16_t angle_q14,uint32_t distance_q2,uint8_t quality) {
  return {uint32_t((uint64_t(angle_q14)*90000+8192)/16384)%360000,distance_q2/4,uint32_t(quality>>2)};
 }
+inline Sample convert_v2(uint16_t angle_q14,uint32_t distance_q2,uint8_t quality) {
+ auto result=convert(angle_q14,distance_q2,quality);result.quality=quality;return result;
+}
 template<class T> class LatestTwo {
  std::mutex mutex_; uint64_t serial_=0;
  std::deque<std::pair<uint64_t,std::shared_ptr<const T>>> frames_;
