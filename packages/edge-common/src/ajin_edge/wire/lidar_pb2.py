@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0blidar.proto\x12\x12\x61jin.edge.lidar.v1\"F\n\nScanSample\x12\x12\n\nangle_mdeg\x18\x01 \x01(\r\x12\x13\n\x0b\x64istance_mm\x18\x02 \x01(\r\x12\x0f\n\x07quality\x18\x03 \x01(\r\"\x99\x02\n\tScanFrame\x12\x16\n\x0eschema_version\x18\x01 \x01(\t\x12\x0f\n\x07\x65\x64ge_id\x18\x02 \x01(\t\x12\x11\n\tsensor_id\x18\x03 \x01(\t\x12\x10\n\x08sequence\x18\x04 \x01(\x04\x12\x1b\n\x13\x61\x63quired_at_unix_ms\x18\x05 \x01(\x03\x12\x1d\n\x15\x61\x63quired_monotonic_ns\x18\x06 \x01(\x04\x12\x12\n\nsdk_status\x18\x07 \x01(\t\x12\x0f\n\x07scan_hz\x18\x08 \x01(\x01\x12/\n\x07samples\x18\t \x03(\x0b\x32\x1e.ajin.edge.lidar.v1.ScanSample\x12\x13\n\x0binstance_id\x18\n \x01(\t\x12\x17\n\x0f\x63onfig_revision\x18\x0b \x01(\t\"\'\n\x10SubscribeRequest\x12\x13\n\x0b\x63onsumer_id\x18\x01 \x01(\t2j\n\x0fLidarScanSource\x12W\n\x0eSubscribeScans\x12$.ajin.edge.lidar.v1.SubscribeRequest\x1a\x1d.ajin.edge.lidar.v1.ScanFrame0\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0blidar.proto\x12\x12\x61jin.edge.lidar.v1\"a\n\nScanSample\x12\x12\n\nangle_mdeg\x18\x01 \x01(\r\x12\x13\n\x0b\x64istance_mm\x18\x02 \x01(\r\x12\x0f\n\x07quality\x18\x03 \x01(\r\x12\x19\n\x11sdk_invalid_range\x18\x04 \x01(\x08\"\xc3\x02\n\tScanFrame\x12\x16\n\x0eschema_version\x18\x01 \x01(\t\x12\x0f\n\x07\x65\x64ge_id\x18\x02 \x01(\t\x12\x11\n\tsensor_id\x18\x03 \x01(\t\x12\x10\n\x08sequence\x18\x04 \x01(\x04\x12\x1b\n\x13\x61\x63quired_at_unix_ms\x18\x05 \x01(\x03\x12\x1d\n\x15\x61\x63quired_monotonic_ns\x18\x06 \x01(\x04\x12\x12\n\nsdk_status\x18\x07 \x01(\t\x12\x0f\n\x07scan_hz\x18\x08 \x01(\x01\x12/\n\x07samples\x18\t \x03(\x0b\x32\x1e.ajin.edge.lidar.v1.ScanSample\x12\x13\n\x0binstance_id\x18\n \x01(\t\x12\x17\n\x0f\x63onfig_revision\x18\x0b \x01(\t\x12\x0f\n\x07scan_id\x18\x0c \x01(\t\x12\x17\n\x0f\x63lock_domain_id\x18\r \x01(\t\"\'\n\x10SubscribeRequest\x12\x13\n\x0b\x63onsumer_id\x18\x01 \x01(\t2j\n\x0fLidarScanSource\x12W\n\x0eSubscribeScans\x12$.ajin.edge.lidar.v1.SubscribeRequest\x1a\x1d.ajin.edge.lidar.v1.ScanFrame0\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,11 +32,11 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'lidar_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_SCANSAMPLE']._serialized_start=35
-  _globals['_SCANSAMPLE']._serialized_end=105
-  _globals['_SCANFRAME']._serialized_start=108
-  _globals['_SCANFRAME']._serialized_end=389
-  _globals['_SUBSCRIBEREQUEST']._serialized_start=391
-  _globals['_SUBSCRIBEREQUEST']._serialized_end=430
-  _globals['_LIDARSCANSOURCE']._serialized_start=432
-  _globals['_LIDARSCANSOURCE']._serialized_end=538
+  _globals['_SCANSAMPLE']._serialized_end=132
+  _globals['_SCANFRAME']._serialized_start=135
+  _globals['_SCANFRAME']._serialized_end=458
+  _globals['_SUBSCRIBEREQUEST']._serialized_start=460
+  _globals['_SUBSCRIBEREQUEST']._serialized_end=499
+  _globals['_LIDARSCANSOURCE']._serialized_start=501
+  _globals['_LIDARSCANSOURCE']._serialized_end=607
 # @@protoc_insertion_point(module_scope)

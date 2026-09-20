@@ -18,6 +18,7 @@ measurement-uplink = "ajin_measurement_uplink.runtime:main"
 edge-orchestrator = "ajin_edge_orchestrator.runtime:main"
 edge-healthcheck = "ajin_edge.status:main"
 edge-replay = "ajin_lidar_processing.replay:main"
+edge-v2 = "ajin_edge.v2.runtime:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [

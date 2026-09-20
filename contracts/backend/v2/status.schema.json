@@ -1,0 +1,330 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "enum": [
+        "2.0"
+      ]
+    },
+    "message_type": {
+      "enum": [
+        "edge_status"
+      ]
+    },
+    "message_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "edge_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(Z|\\+00:00)$"
+    },
+    "config_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "orchestrator_instance_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "overall_state": {
+      "enum": [
+        "HEALTHY",
+        "DEGRADED",
+        "MEASUREMENT_UNAVAILABLE",
+        "CONFIG_ERROR",
+        "UNKNOWN"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "uniqueItems": true
+    },
+    "clock": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "SYNCED",
+            "DEGRADED",
+            "UNSYNCED"
+          ]
+        },
+        "offset_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "offset_ms"
+      ],
+      "additionalProperties": false
+    },
+    "sensors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sensor_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "data_state": {
+            "enum": [
+              "FRESH",
+              "STALE",
+              "RECOVERING",
+              "UNAVAILABLE",
+              "UNKNOWN"
+            ]
+          },
+          "last_scan_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "(Z|\\+00:00)$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "sensor_id",
+          "data_state",
+          "last_scan_at",
+          "reason_codes"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "state": {
+            "enum": [
+              "STARTING",
+              "HEALTHY",
+              "DEGRADED",
+              "RETRYING",
+              "FATAL",
+              "UNKNOWN"
+            ]
+          },
+          "last_progress_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "(Z|\\+00:00)$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "service",
+          "state",
+          "last_progress_at",
+          "reason_codes"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "properties": {
+        "pending_messages": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "pending_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "quarantined_messages": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "last_backend_ack_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "(Z|\\+00:00)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "pending_messages",
+        "pending_bytes",
+        "quarantined_messages",
+        "last_backend_ack_at"
+      ],
+      "additionalProperties": false
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "limit_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "used_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "lost_messages": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "loss_from": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "(Z|\\+00:00)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "loss_to": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "(Z|\\+00:00)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_loss_reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unavailable_evidence_scan_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "maxItems": 128
+        }
+      },
+      "required": [
+        "limit_bytes",
+        "used_bytes",
+        "lost_messages",
+        "loss_from",
+        "loss_to",
+        "last_loss_reason",
+        "unavailable_evidence_scan_ids"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "message_type",
+    "message_id",
+    "site_id",
+    "edge_id",
+    "generated_at",
+    "config_revision",
+    "orchestrator_instance_id",
+    "sequence",
+    "overall_state",
+    "reason_codes",
+    "clock",
+    "sensors",
+    "services",
+    "delivery",
+    "storage"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

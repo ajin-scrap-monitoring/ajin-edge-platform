@@ -1,0 +1,374 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "enum": [
+        "2.0"
+      ]
+    },
+    "message_type": {
+      "enum": [
+        "lidar_measurement"
+      ]
+    },
+    "message_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "edge_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(Z|\\+00:00)$"
+    },
+    "config_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "delivery_kind": {
+      "enum": [
+        "PERIODIC",
+        "EVIDENCE"
+      ]
+    },
+    "report_interval_ms": {
+      "anyOf": [
+        {
+          "enum": [
+            1000
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "selection_policy": {
+      "enum": [
+        "LATEST_TIME_MATCHED_PAIR",
+        "REFERENCED_SCANS"
+      ]
+    },
+    "coordinate_frame_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "pair_state": {
+      "enum": [
+        "MATCHED",
+        "UNMATCHED",
+        "PARTIAL",
+        "NONE",
+        "NOT_APPLICABLE"
+      ]
+    },
+    "pair_delta_ms": {
+      "anyOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sensors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sensor_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "availability": {
+            "enum": [
+              "PRESENT",
+              "NO_NEW_SCAN",
+              "STALE",
+              "REJECTED",
+              "CONFIG_UNAVAILABLE"
+            ]
+          },
+          "calibration_version": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "transform_state": {
+            "enum": [
+              "VERIFIED",
+              "UNVERIFIED",
+              "UNAVAILABLE"
+            ]
+          },
+          "transform_reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "uniqueItems": true
+          },
+          "angle_intervals_mdeg": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "start_inclusive": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 359999
+                },
+                "end_exclusive": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 360000
+                }
+              },
+              "required": [
+                "start_inclusive",
+                "end_exclusive"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "scan": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "scan_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "stream_instance_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "sequence": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "acquired_at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "(Z|\\+00:00)$"
+                  },
+                  "timestamp_source": {
+                    "enum": [
+                      "EDGE_SCAN_RECEIVED"
+                    ]
+                  },
+                  "clock_domain_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "acquired_monotonic_ns": {
+                    "type": "string",
+                    "pattern": "^[0-9]{1,20}$"
+                  },
+                  "clock_state": {
+                    "enum": [
+                      "SYNCED",
+                      "DEGRADED",
+                      "UNSYNCED"
+                    ]
+                  },
+                  "clock_offset_ms": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "source_point_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "selected_point_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "points": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "index": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "angle_mdeg": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 359999
+                        },
+                        "distance_mm": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 1073741823
+                        },
+                        "quality": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 255
+                        },
+                        "position_mm": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "x": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "y": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "z": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "x",
+                                "y",
+                                "z"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "calculation_reason_codes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "index",
+                        "angle_mdeg",
+                        "distance_mm",
+                        "quality",
+                        "position_mm",
+                        "calculation_reason_codes"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "scan_id",
+                  "stream_instance_id",
+                  "sequence",
+                  "acquired_at",
+                  "timestamp_source",
+                  "clock_domain_id",
+                  "acquired_monotonic_ns",
+                  "clock_state",
+                  "clock_offset_ms",
+                  "source_point_count",
+                  "selected_point_count",
+                  "points"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "sensor_id",
+          "availability",
+          "calibration_version",
+          "transform_state",
+          "transform_reason_codes",
+          "angle_intervals_mdeg",
+          "scan"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "assessment_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "original_message_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  },
+  "required": [
+    "schema_version",
+    "message_type",
+    "message_id",
+    "site_id",
+    "edge_id",
+    "generated_at",
+    "config_revision",
+    "delivery_kind",
+    "report_interval_ms",
+    "selection_policy",
+    "coordinate_frame_id",
+    "pair_state",
+    "pair_delta_ms",
+    "sensors"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

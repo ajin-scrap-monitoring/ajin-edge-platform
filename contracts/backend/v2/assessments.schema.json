@@ -1,0 +1,355 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "enum": [
+        "2.0"
+      ]
+    },
+    "message_type": {
+      "enum": [
+        "edge_assessment"
+      ]
+    },
+    "message_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "edge_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(Z|\\+00:00)$"
+    },
+    "config_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "assessment_type": {
+      "enum": [
+        "STATE",
+        "EVENT"
+      ]
+    },
+    "assessment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "observed_from": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "(Z|\\+00:00)$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "observed_to": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "(Z|\\+00:00)$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rule_version": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "decision_state": {
+      "enum": [
+        "AVAILABLE",
+        "LIMITED",
+        "UNAVAILABLE"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "uniqueItems": true
+    },
+    "fill_state": {
+      "enum": [
+        "AVAILABLE",
+        "UNAVAILABLE"
+      ]
+    },
+    "fill_estimate": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ratio": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "method_version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "ratio",
+            "method_version"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "event": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "FILL_INCREASE",
+                "FILL_DECREASE",
+                "OCCLUSION",
+                "COLLECTION",
+                "GRAPPLE_PRESENT"
+              ]
+            },
+            "stage": {
+              "enum": [
+                "SUSPECTED",
+                "CONFIRMED",
+                "RESOLVED",
+                "RETRACTED"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "stage"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "fill": {
+          "enum": [
+            "NOT_IMPLEMENTED",
+            "NOT_VALIDATED",
+            "ENABLED"
+          ]
+        },
+        "occlusion": {
+          "enum": [
+            "NOT_IMPLEMENTED",
+            "NOT_VALIDATED",
+            "ENABLED"
+          ]
+        },
+        "collection": {
+          "enum": [
+            "NOT_IMPLEMENTED",
+            "NOT_VALIDATED",
+            "ENABLED"
+          ]
+        },
+        "vision": {
+          "enum": [
+            "NOT_IMPLEMENTED",
+            "NOT_VALIDATED",
+            "ENABLED"
+          ]
+        }
+      },
+      "required": [
+        "fill",
+        "occlusion",
+        "collection",
+        "vision"
+      ],
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "scans": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "scan_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "sensor_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "config_revision": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "calibration_version": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "coordinate_frame_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": [
+              "scan_id",
+              "sensor_id",
+              "config_revision",
+              "calibration_version",
+              "coordinate_frame_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "vision_observations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "camera_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "stream_instance_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "frame_sequence": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "frame_acquired_at": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "(Z|\\+00:00)$"
+              },
+              "timestamp_source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "observation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "model_version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": [
+              "camera_id",
+              "stream_instance_id",
+              "frame_sequence",
+              "frame_acquired_at",
+              "timestamp_source",
+              "observation_id",
+              "model_version"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "scans",
+        "vision_observations"
+      ],
+      "additionalProperties": false
+    },
+    "original_message_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  },
+  "required": [
+    "schema_version",
+    "message_type",
+    "message_id",
+    "site_id",
+    "edge_id",
+    "generated_at",
+    "config_revision",
+    "assessment_type",
+    "assessment_id",
+    "revision",
+    "observed_from",
+    "observed_to",
+    "rule_version",
+    "decision_state",
+    "reason_codes",
+    "fill_state",
+    "fill_estimate",
+    "event",
+    "capabilities",
+    "evidence"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

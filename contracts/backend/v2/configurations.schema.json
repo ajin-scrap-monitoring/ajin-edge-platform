@@ -1,0 +1,211 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "enum": [
+        "2.0"
+      ]
+    },
+    "message_type": {
+      "enum": [
+        "edge_configuration"
+      ]
+    },
+    "message_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "edge_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(Z|\\+00:00)$"
+    },
+    "config_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "coordinate_frame": {
+      "type": "object",
+      "properties": {
+        "frame_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "unit": {
+          "enum": [
+            "mm"
+          ]
+        },
+        "origin_description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "x_axis_description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "y_axis_description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "z_axis_description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "handedness": {
+          "enum": [
+            "RIGHT_HANDED"
+          ]
+        }
+      },
+      "required": [
+        "frame_id",
+        "unit",
+        "origin_description",
+        "x_axis_description",
+        "y_axis_description",
+        "z_axis_description",
+        "handedness"
+      ],
+      "additionalProperties": false
+    },
+    "sensors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sensor_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "angle_intervals_mdeg": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "start_inclusive": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 359999
+                },
+                "end_exclusive": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 360000
+                }
+              },
+              "required": [
+                "start_inclusive",
+                "end_exclusive"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "calibration": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "verification_state": {
+                    "enum": [
+                      "VERIFIED",
+                      "UNVERIFIED"
+                    ]
+                  },
+                  "angle_sign": {
+                    "enum": [
+                      -1,
+                      1
+                    ]
+                  },
+                  "angle_zero_offset_mdeg": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "rotation": {
+                    "type": "array",
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 3,
+                      "maxItems": 3
+                    },
+                    "minItems": 3,
+                    "maxItems": 3
+                  },
+                  "translation_mm": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 3,
+                    "maxItems": 3
+                  }
+                },
+                "required": [
+                  "version",
+                  "verification_state",
+                  "angle_sign",
+                  "angle_zero_offset_mdeg",
+                  "rotation",
+                  "translation_mm"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "sensor_id",
+          "angle_intervals_mdeg",
+          "calibration"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 2,
+      "maxItems": 2
+    }
+  },
+  "required": [
+    "schema_version",
+    "message_type",
+    "message_id",
+    "site_id",
+    "edge_id",
+    "generated_at",
+    "config_revision",
+    "coordinate_frame",
+    "sensors"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

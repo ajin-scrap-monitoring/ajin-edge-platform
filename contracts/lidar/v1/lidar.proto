@@ -5,6 +5,8 @@ message ScanSample {
   uint32 angle_mdeg = 1;
   uint32 distance_mm = 2;
   uint32 quality = 3;
+  // v2: SDK dist_mm_q2 == 0 before conversion to integer mm.
+  bool sdk_invalid_range = 4;
 }
 message ScanFrame {
   string schema_version = 1;
@@ -19,6 +21,9 @@ message ScanFrame {
   // Required by v1 consumers: sequence is scoped to this process instance.
   string instance_id = 10;
   string config_revision = 11;
+  // Additive fields; required only when schema_version == "2.0".
+  string scan_id = 12;
+  string clock_domain_id = 13;
 }
 message SubscribeRequest { string consumer_id = 1; }
 service LidarScanSource {
