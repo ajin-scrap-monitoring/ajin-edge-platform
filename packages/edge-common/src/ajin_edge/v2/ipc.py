@@ -3,6 +3,7 @@
 import asyncio
 import json
 from pathlib import Path
+from uuid import uuid4
 
 import grpc
 
@@ -92,6 +93,7 @@ class ObservationBroker:
         self.capacity = capacity
         self.queues = set()
         self.dropped = 0
+        self.instance_id = str(uuid4())
 
     def subscribe(self):
         if len(self.queues) >= 8:
@@ -110,7 +112,13 @@ class ObservationBroker:
             if queue.full():
                 queue.get_nowait()
                 self.dropped += 1
-            queue.put_nowait({"observation": observation, "dropped_observations": self.dropped})
+            queue.put_nowait(
+                {
+                    "observation": observation,
+                    "dropped_observations": self.dropped,
+                    "stream_instance_id": self.instance_id,
+                }
+            )
 
     async def serve(self, endpoint):
         async def subscribe(request, context):

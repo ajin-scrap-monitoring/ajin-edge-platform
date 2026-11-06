@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from ajin_edge.v2.processing import ProcessingEngine, transform_scan, validate_configuration
@@ -34,7 +35,7 @@ def scan(sensor="lidar-a", sequence=1, ms=950, domain="boot-test"):
         "scan_id": f"{sensor}-{sequence}",
         "stream_instance_id": "stream-test",
         "sequence": sequence,
-        "acquired_at": "2026-09-20T00:00:00.950Z",
+        "acquired_at": (datetime(2026, 9, 20, tzinfo=UTC) + timedelta(milliseconds=ms)).isoformat(),
         "timestamp_source": "EDGE_SCAN_RECEIVED",
         "clock_domain_id": domain,
         "acquired_monotonic_ns": str(ms * 1000000),
@@ -108,11 +109,11 @@ def test_latest_pair_uses_older_matching_scan_not_arbitrary_latest():
     engine = ProcessingEngine(configuration(), clock_domain_id="boot-test")
     for raw in [scan(ms=800), scan(sequence=2, ms=990), scan("lidar-b", ms=810)]:
         engine.ingest(raw)
-    message = engine.periodic(now_ns=1000000000)
+    message = engine.periodic(now_ns=1000000000, generated_at="2026-09-20T00:00:01.000Z")
     assert message["pair_state"] == "MATCHED"
     assert message["pair_delta_ms"] == 10
     assert [s["scan"]["sequence"] for s in message["sensors"]] == [1, 1]
-    following = engine.periodic(now_ns=1100000000)
+    following = engine.periodic(now_ns=1100000000, generated_at="2026-09-20T00:00:01.000Z")
     assert following["pair_state"] == "PARTIAL"
     assert following["sensors"][0]["scan"]["sequence"] == 2
     assert following["sensors"][1]["scan"] is None
@@ -123,17 +124,31 @@ def test_pair_boundary(delta, state):
     engine = ProcessingEngine(configuration(), clock_domain_id="boot-test")
     engine.ingest(scan(ms=1000))
     engine.ingest(scan("lidar-b", ms=1000 - delta))
-    assert engine.periodic(now_ns=1000000000)["pair_state"] == state
+    assert (
+        engine.periodic(now_ns=1000000000, generated_at="2026-09-20T00:00:01.000Z")["pair_state"]
+        == state
+    )
 
 
 def test_freshness_boundary_and_no_new_scan():
     engine = ProcessingEngine(configuration(), clock_domain_id="boot-test")
     engine.ingest(scan(ms=0))
     engine.ingest(scan("lidar-b", ms=0))
-    assert engine.periodic(now_ns=1000000000)["pair_state"] == "MATCHED"
-    assert engine.periodic(now_ns=1000000001)["pair_state"] == "NONE"
+    assert (
+        engine.periodic(now_ns=1000000000, generated_at="2026-09-20T00:00:01.000Z")["pair_state"]
+        == "MATCHED"
+    )
+    assert (
+        engine.periodic(now_ns=1000000001, generated_at="2026-09-20T00:00:01.000Z")["pair_state"]
+        == "NONE"
+    )
     engine.ingest(scan(sequence=2, ms=0))
-    assert engine.periodic(now_ns=1000000001)["sensors"][0]["availability"] == "STALE"
+    assert (
+        engine.periodic(now_ns=1000000001, generated_at="2026-09-20T00:00:01.000Z")["sensors"][0][
+            "availability"
+        ]
+        == "STALE"
+    )
 
 
 def test_wrong_clock_and_conflicting_scan_are_rejected_without_overwrite():
@@ -147,7 +162,10 @@ def test_wrong_clock_and_conflicting_scan_are_rejected_without_overwrite():
     with pytest.raises(ValueError):
         engine.ingest(modified)
     assert (
-        engine.periodic(now_ns=1000000000)["sensors"][0]["scan"]["points"][0]["distance_mm"] == 1000
+        engine.periodic(now_ns=1000000000, generated_at="2026-09-20T00:00:01.000Z")["sensors"][0][
+            "scan"
+        ]["points"][0]["distance_mm"]
+        == 1000
     )
 
 
@@ -163,7 +181,9 @@ def test_unconfigured_angles_are_not_defaulted():
     cfg["sensors"][0]["angle_intervals_mdeg"] = []
     engine = ProcessingEngine(cfg, clock_domain_id="boot-test")
     engine.ingest(scan())
-    sensor = engine.periodic(now_ns=1000000000)["sensors"][0]
+    sensor = engine.periodic(now_ns=1000000000, generated_at="2026-09-20T00:00:01.000Z")["sensors"][
+        0
+    ]
     assert sensor["availability"] == "CONFIG_UNAVAILABLE"
     assert sensor["scan"] is None
 
@@ -183,3 +203,65 @@ def test_hq_quality_byte_and_sdk_invalid_range_are_preserved_without_filtering()
     assert "sdk_invalid_range" not in points[0]
     # q2 below one mm rounds down; only the SDK flag, not rounded mm, is invalid.
     assert points[1]["position_mm"] is not None
+
+
+@pytest.mark.parametrize(
+    "age_ms,expected", [(999, "PRESENT"), (1000, "PRESENT"), (1001, "STALE"), (1010, "STALE")]
+)
+def test_periodic_checks_age_at_generation_not_only_selection(age_ms, expected):
+    engine = ProcessingEngine(configuration(), clock_domain_id="boot-test")
+    engine.ingest(scan(ms=0))
+    engine.ingest(scan("lidar-b", ms=0))
+    generated = (datetime(2026, 9, 20, tzinfo=UTC) + timedelta(milliseconds=age_ms)).isoformat()
+    body = engine.periodic(now_ns=1_000_000_000, generated_at=generated)
+    assert [s["availability"] for s in body["sensors"]] == [expected, expected]
+    assert body["pair_state"] == ("MATCHED" if expected == "PRESENT" else "NONE")
+    assert body["pair_delta_ms"] == (0 if expected == "PRESENT" else None)
+
+
+def test_generation_delay_reselects_newer_single_scan_and_preserves_its_identity(monkeypatch):
+    import ajin_edge.v2.processing as module
+
+    engine = ProcessingEngine(configuration(), clock_domain_id="boot-test")
+    for raw in (scan(ms=0), scan("lidar-b", ms=0), scan(sequence=2, ms=200)):
+        engine.ingest(raw)
+    monkeypatch.setattr(module, "utc_now", lambda: "2026-09-20T00:00:01.010Z")
+    body = engine.periodic(now_ns=1_000_000_000)
+    assert body["generated_at"] == "2026-09-20T00:00:01.010Z"
+    assert body["pair_state"] == "PARTIAL"
+    assert body["pair_delta_ms"] is None
+    assert body["sensors"][0]["scan"]["scan_id"] == "lidar-a-2"
+    assert body["sensors"][1]["availability"] == "STALE"
+    assert body["sensors"][1]["scan"] is None
+
+
+def test_future_utc_is_rejected_even_with_fresh_monotonic_age():
+    engine = ProcessingEngine(configuration(), clock_domain_id="boot-test")
+    engine.ingest(scan(ms=950))
+    body = engine.periodic(now_ns=1_000_000_000, generated_at="2026-09-20T00:00:00.900Z")
+    assert body["pair_state"] == "NONE"
+    assert body["sensors"][0]["scan"] is None
+
+
+def test_periodic_rechecks_utc_after_payload_preparation(monkeypatch):
+    import ajin_edge.v2.processing as module
+
+    engine = ProcessingEngine(configuration(), clock_domain_id="boot-test")
+    engine.ingest(scan(ms=0))
+    prepared = [False]
+    original = module.deepcopy
+
+    def copy_then_delay(value):
+        result = original(value)
+        if isinstance(value, dict) and value.get("availability") == "PRESENT":
+            prepared[0] = True
+        return result
+
+    monkeypatch.setattr(module, "deepcopy", copy_then_delay)
+    monkeypatch.setattr(
+        module,
+        "utc_now",
+        lambda: "2026-09-20T00:00:01.010Z" if prepared[0] else "2026-09-20T00:00:01.000Z",
+    )
+    body = engine.periodic(now_ns=1_000_000_000)
+    assert body["sensors"][0]["availability"] == "STALE"

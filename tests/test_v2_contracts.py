@@ -9,13 +9,15 @@ from test_v2_processing import configuration, scan
 def message():
     engine = ProcessingEngine(configuration(), clock_domain_id="boot-test")
     engine.ingest(scan())
-    return engine.periodic(now_ns=1000000000)
+    return engine.periodic(now_ns=1000000000, generated_at="2026-09-20T00:00:01.000Z")
 
 
 def test_valid_measurement_and_empty_measurement():
     validate_message(message())
     validate_message(
-        ProcessingEngine(configuration(), clock_domain_id="boot-test").periodic(now_ns=1000000000)
+        ProcessingEngine(configuration(), clock_domain_id="boot-test").periodic(
+            now_ns=1000000000, generated_at="2026-09-20T00:00:01.000Z"
+        )
     )
 
 

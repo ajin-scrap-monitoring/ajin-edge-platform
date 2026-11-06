@@ -8,6 +8,7 @@ import time
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import grpc
 import httpx
@@ -79,11 +80,27 @@ class LocalStatus:
         self.progress = None
         self.losses = 0
         self.reason = ""
+        self.instance_id = str(uuid4())
+        self.last_backlog_loss = None
+
+    def lost(self, reason):
+        self.losses += 1
+        self.reason = reason
+        if reason == "LOCAL_DELIVERY_BACKLOG_LOSS":
+            self.last_backlog_loss = time.monotonic()
 
     def advanced(self):
         self.progress = utc_now()
 
     def write(self, state="HEALTHY", **telemetry):
+        if (
+            self.reason == "LOCAL_DELIVERY_BACKLOG_LOSS"
+            and self.last_backlog_loss is not None
+            and time.monotonic() - self.last_backlog_loss >= LossTracker.recovery_seconds
+        ):
+            self.reason = ""
+            if state == "DEGRADED":
+                state = "HEALTHY"
         registration = self.config["configuration"]
         # Each of the three v2 writers has one bounded snapshot and one replacement.
         if (
@@ -96,6 +113,7 @@ class LocalStatus:
             {
                 "schema_version": "2.0",
                 "service": self.service,
+                "instance_id": self.instance_id,
                 "site_id": registration["site_id"],
                 "edge_id": registration["edge_id"],
                 "config_revision": registration["config_revision"],
@@ -117,8 +135,7 @@ class PendingSender:
     def offer(self, payload):
         if len(self.queue) >= self.capacity:
             self.queue.popleft()
-            self.status.losses += 1
-            self.status.reason = "LOCAL_DELIVERY_BACKLOG_LOSS"
+            self.status.lost("LOCAL_DELIVERY_BACKLOG_LOSS")
         self.queue.append(payload)
 
     async def run(self):
@@ -288,7 +305,35 @@ async def uplink(config, stop):
                 await server.stop(3)
 
 
-def service_snapshots(config):
+class LossTracker:
+    """Keep cumulative counters intact; alert for ten seconds since a new loss."""
+
+    recovery_seconds = 10
+
+    def __init__(self):
+        self.sources = {}
+
+    def observe(self, name, instance, counters, *, now):
+        previous = self.sources.get(name)
+        since = None
+        if previous is not None and previous[0] == instance:
+            old, since = previous[1:]
+            if any(value < old.get(key, 0) for key, value in counters.items()):
+                since = None
+                increased = any(value > 0 for value in counters.values())
+            else:
+                increased = any(value > old.get(key, 0) for key, value in counters.items())
+        else:
+            increased = any(value > 0 for value in counters.values())
+        if increased:
+            since = now
+        self.sources[name] = (instance, dict(counters), since)
+        return since is not None and now - since < self.recovery_seconds
+
+
+def service_snapshots(config, *, loss_tracker=None, now=None):
+    loss_tracker = loss_tracker if loss_tracker is not None else LossTracker()
+    now = time.monotonic() if now is None else now
     expected = [
         "lidar-driver-" + (s[6:] if s.startswith("lidar-") else s) for s in config["drivers"]
     ] + ["lidar-processing", "measurement-uplink", "camera-edge", "edge-orchestrator"]
@@ -320,15 +365,16 @@ def service_snapshots(config):
                 last_progress_at=source.get("last_progress_at"),
                 reason_codes=source["reason_codes"],
             )
-            losses = any(
-                source.get(key, 0) > 0
+            counters = {
+                key: source.get(key, 0)
                 for key in (
                     "dropped_scans",
                     "dropped_observations",
                     "local_dropped_messages",
                     "frame_loss",
                 )
-            )
+            }
+            losses = loss_tracker.observe(name, source.get("instance_id"), counters, now=now)
             if losses:
                 item["reason_codes"] = sorted(set(item["reason_codes"]) | {"OBSERVATION_LOSS"})
                 if item["state"] == "HEALTHY":
@@ -343,12 +389,16 @@ async def orchestrator(config, stop):
     registration = config["configuration"]
     orch, gate = Orchestrator(registration), ConfigurationGate()
     status = LocalStatus(config, "edge-orchestrator")
+    service_losses, observation_losses = LossTracker(), LossTracker()
+    observation_count = 0
+    observation_instance = None
     async with grpc.aio.insecure_channel(config["delivery_endpoint"], options=OPTIONS) as channel:
         client = DeliveryStub(channel)
         sender = PendingSender(client, status)
         configured = asyncio.Event()
 
         async def consume():
+            nonlocal observation_count, observation_instance
             while True:
                 try:
                     async with grpc.aio.insecure_channel(
@@ -367,8 +417,17 @@ async def orchestrator(config, stop):
                                 status.advanced()
                                 if status.reason == "OBSERVATIONS_UNAVAILABLE":
                                     status.reason = ""
-                            if item["dropped_observations"]:
+                            observation_count = item["dropped_observations"]
+                            observation_instance = item.get("stream_instance_id")
+                            if observation_losses.observe(
+                                "observations",
+                                observation_instance,
+                                {"dropped_observations": observation_count},
+                                now=time.monotonic(),
+                            ):
                                 status.reason = "OBSERVATION_LOSS"
+                            elif status.reason == "OBSERVATION_LOSS":
+                                status.reason = ""
                 except grpc.aio.AioRpcError:
                     status.reason = "OBSERVATIONS_UNAVAILABLE"
                 await asyncio.sleep(1)
@@ -379,10 +438,19 @@ async def orchestrator(config, stop):
             last_status, fingerprint = -10.0, None
             while True:
                 start = time.monotonic()
+                if status.reason == "OBSERVATION_LOSS" and not observation_losses.observe(
+                    "observations",
+                    observation_instance,
+                    {"dropped_observations": observation_count},
+                    now=start,
+                ):
+                    status.reason = ""
                 try:
                     stats = await client.stats()
                     snapshot = orch.status(
-                        stats, service_snapshots(config), now_ns=time.monotonic_ns()
+                        stats,
+                        service_snapshots(config, loss_tracker=service_losses, now=start),
+                        now_ns=time.monotonic_ns(),
                     )
                     signature = canonical(
                         {
