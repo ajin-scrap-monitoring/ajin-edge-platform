@@ -247,20 +247,24 @@ class ProcessingEngine:
                 if item["scan"] is not None
                 and 0 <= now_ns - int(item["scan"]["acquired_monotonic_ns"]) <= 1000000000
             ]
+        # Prepare the expensive point-array copies before taking the wire timestamp.
+        # No candidate is consumed until both monotonic and final UTC checks pass.
+        preliminary, _ = self._choose(candidates)
+        prepared = {id(item): deepcopy(item) for item in preliminary if item is not None}
+        generated_at = generated_at or utc_now()
+        generated = datetime.fromisoformat(generated_at)
+        if generated.tzinfo is None:
+            raise ValueError("UTC generation time required")
+        for sensor_id in candidates:
+            candidates[sensor_id] = [
+                item
+                for item in candidates[sensor_id]
+                if 0
+                <= (generated - datetime.fromisoformat(item["scan"]["acquired_at"])).total_seconds()
+                <= 1
+            ]
+        chosen, pairs = self._choose(candidates)
         a, b = self.sensors
-        pairs = [
-            (left, right)
-            for left in candidates[a]
-            for right in candidates[b]
-            if abs(self._time(left) - self._time(right)) <= 100000000
-        ]
-        if pairs:
-            chosen = max(
-                pairs,
-                key=lambda p: (min(map(self._time, p)), -abs(self._time(p[0]) - self._time(p[1]))),
-            )
-        else:
-            chosen = tuple(max(candidates[s], key=self._time, default=None) for s in (a, b))
         present = sum(item is not None for item in chosen)
         state = (
             ("MATCHED" if pairs else "UNMATCHED")
@@ -274,7 +278,9 @@ class ProcessingEngine:
         for sensor_id, selected in zip((a, b), chosen, strict=True):
             queue = self.buffers[sensor_id]
             if selected is not None:
-                sensors.append(deepcopy(selected))
+                sensors.append(
+                    prepared[id(selected)] if id(selected) in prepared else deepcopy(selected)
+                )
                 # Consume selected and older candidates: do not report backwards in time.
                 self.buffers[sensor_id] = deque(
                     item
@@ -304,6 +310,23 @@ class ProcessingEngine:
             "pair_delta_ms": delta,
             "sensors": sensors,
         }
+
+    def _choose(self, candidates):
+        a, b = self.sensors
+        pairs = [
+            (left, right)
+            for left in candidates[a]
+            for right in candidates[b]
+            if abs(self._time(left) - self._time(right)) <= 100000000
+        ]
+        if pairs:
+            chosen = max(
+                pairs,
+                key=lambda p: (min(map(self._time, p)), -abs(self._time(p[0]) - self._time(p[1]))),
+            )
+        else:
+            chosen = tuple(max(candidates[s], key=self._time, default=None) for s in (a, b))
+        return chosen, bool(pairs)
 
     @staticmethod
     def _time(item):

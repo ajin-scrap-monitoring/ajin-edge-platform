@@ -185,3 +185,71 @@ async def test_successful_local_delivery_clears_transient_error(tmp_path):
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+def test_loss_alert_recovers_without_resetting_counters():
+    from ajin_edge.v2.runtime import LossTracker
+
+    tracker = LossTracker()
+    assert tracker.observe("driver", "instance-1", {"frame_loss": 21}, now=0)
+    assert tracker.observe("driver", "instance-1", {"frame_loss": 21}, now=9)
+    assert not tracker.observe("driver", "instance-1", {"frame_loss": 21}, now=10)
+    assert tracker.observe("driver", "instance-1", {"frame_loss": 22}, now=12)
+    assert not tracker.observe("driver", "instance-1", {"frame_loss": 22}, now=22)
+    assert not tracker.observe("driver", "instance-2", {"frame_loss": 0}, now=23)
+    assert tracker.observe("driver", "instance-2", {"frame_loss": 1}, now=24)
+    assert tracker.observe("unversioned", None, {"frame_loss": 100}, now=0)
+    assert not tracker.observe("unversioned", None, {"frame_loss": 100}, now=11)
+    assert tracker.observe("unversioned", None, {"frame_loss": 1}, now=12)
+
+
+def test_local_backlog_loss_reason_recovers_while_count_is_preserved(tmp_path, monkeypatch):
+    import json
+
+    import ajin_edge.v2.runtime as module
+    from ajin_edge.v2.runtime import LocalStatus, PendingSender
+    from test_v2_processing import configuration
+
+    clock = [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    status = LocalStatus(
+        {"configuration": configuration(), "status_dir": str(tmp_path)}, "lidar-processing"
+    )
+    sender = PendingSender(None, status, capacity=1)
+    sender.offer({"id": 1})
+    sender.offer({"id": 2})
+    assert status.reason == "LOCAL_DELIVERY_BACKLOG_LOSS"
+    clock[0] = 10
+    status.write()
+    body = json.loads((tmp_path / "lidar-processing.json").read_bytes())
+    assert body["local_dropped_messages"] == 1
+    assert body["reason_codes"] == []
+
+
+def test_service_snapshots_do_not_latch_historical_loss_or_clear_other_faults(tmp_path):
+    from ajin_edge.v2.runtime import LocalStatus, LossTracker, service_snapshots
+    from test_v2_processing import configuration
+
+    config = {
+        "configuration": configuration(),
+        "status_dir": str(tmp_path),
+        "drivers": {"lidar-a": "a", "lidar-b": "b"},
+    }
+    status = LocalStatus(config, "lidar-processing")
+    tracker = LossTracker()
+    status.write(dropped_observations=2686)
+
+    def snapshot(now):
+        return next(
+            s
+            for s in service_snapshots(config, loss_tracker=tracker, now=now)
+            if s["service"] == "lidar-processing"
+        )
+
+    assert snapshot(0)["state"] == "DEGRADED"
+    assert snapshot(10)["state"] == "HEALTHY"
+    assert snapshot(10)["reason_codes"] == []
+    status.reason = "DRIVER_UNAVAILABLE"
+    status.write("DEGRADED", dropped_observations=2686)
+    assert snapshot(11)["state"] == "DEGRADED"
+    assert snapshot(11)["reason_codes"] == ["DRIVER_UNAVAILABLE"]
