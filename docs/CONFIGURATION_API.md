@@ -96,3 +96,5 @@ APPLIED는 센서 정상이나 계산 성공·정확도 인증을 뜻하지 않�
 현재 연동 백엔드가 judgment/section_profiles/fusion_result를 수용하기 전에는 전체 판단 설정을 활성화할 수 없다.
 설치 기본값만 먼저 등록해 원본 XYZ를 제공할 수 있으며, 전체 기본 프로필은 조회·변경 요청용으로 준비된다.
 외부 백엔드의 DB 구현은 이 API 작업 범위에 포함하지 않는다.
+
+Pi 실제 입력·운영 적용 결과와 제한: [검증 기록](CONFIGURATION_API_VALIDATION_2026-11-08.md).

@@ -26,20 +26,20 @@
 
 ## 작업
 
-1. [ ] DEFAULT 결과·항등곡선·동일 가중치·미검증 보류 및 프로필 경계 회귀 실패 재현 후 기본 프로필과 판단 지원 구현
+1. [x] DEFAULT 결과·항등곡선·동일 가중치·미검증 보류 및 프로필 경계 회귀 실패 재현 후 기본 프로필과 판단 지원 구현
    - `packages/edge-common/src/ajin_edge/v2/settings_defaults.py`, `judgment_schema.py`, `judgment.py`
    - `tests/test_v2_settings_defaults.py`
-2. [ ] 설치·단면·곡선·가중치 원자 갱신, 기존 보정 API 호환, 인증·잘못된 범위·ACK 거부·재시작 회귀 작성 후 구현
+2. [x] 설치·단면·곡선·가중치 원자 갱신, 기존 보정 API 호환, 인증·잘못된 범위·ACK 거부·재시작 회귀 작성 후 구현
    - `calibration_schema.py`, `configuration_state.py`, `calibration_api.py`
    - `tests/test_v2_configuration_control.py`, `tests/test_v2_configuration_api.py`
    - 허용된 judgment만 mutable로 추가하며 기존 버전·장치 식별·source revision 검증은 유지
-3. [ ] 통합 API 명세·요청 스키마·기본 프로필 예제 갱신, 전체 회귀·린트·패키지·독립 검토·CI 확인
+3. [x] 통합 API 명세·요청 스키마·기본 프로필 예제 갱신, 전체 회귀·린트·패키지·독립 검토·CI 확인
    - `docs/CONFIGURATION_API.md`, `contracts/control/v1/configuration-request.schema.json`
    - 기존 v2 계약 export의 DEFAULT 상태 반영
-4. [ ] Pi Docker의 실제 입력으로 모든 설정 API 변경·재시작·원본 좌표·단면·종합 기본 추정 검증
+4. [x] Pi Docker의 실제 입력으로 모든 설정 API 변경·재시작·원본 좌표·단면·종합 기본 추정 검증
    - 검증된 이미지로 데이터 서비스3개와 API를 교체하며 기존 큐·인증·설정을 보존
    - 시뮬레이터 환경 정합 확인 후 설치 기본값을 실제 API로 적용하고 백엔드 저장 ACK 확인
-5. [ ] 실제 백엔드 수신 payload에서 같은 스캔의 점3개만 서버 측 발췌, JSON+MD 두 파일 작성
+5. [x] 실제 백엔드 수신 payload에서 같은 스캔의 점3개만 서버 측 발췌, JSON+MD 두 파일 작성
    - 메시지·센서·스캔 식별자, 시각, 원래 index·거리·각도·품질·XYZ·유효성 값을 유지
    - 원문 점 수를3으로 고치지 않고 발췌 사실과 생략 범위를 MD에 설명
    - z는 반사점 세계 좌표이며, bin height_mm은 floor를 뺀 판단 높이임을 구분
