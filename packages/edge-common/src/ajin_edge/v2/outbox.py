@@ -15,7 +15,7 @@ from functools import partial
 from pathlib import Path
 
 from .contracts import validate_message
-from .processing import canonical
+from .processing import canonical, identifier
 
 
 class CapacityError(RuntimeError):
@@ -234,6 +234,169 @@ class Outbox:
             self._loss(payload, "STORAGE_FULL")
             raise CapacityError("message was not stored") from None
         return False
+
+    @staticmethod
+    def _validate_bundle(messages):
+        if not isinstance(messages, list) or not 1 <= len(messages) <= 17:
+            raise ValueError("invalid judgment bundle size")
+        for payload in messages:
+            validate_message(payload)
+        assessment = messages[-1]
+        if assessment["message_type"] != "edge_assessment":
+            raise ValueError("bundle must end with assessment")
+        if len({p["message_id"] for p in messages}) != len(messages):
+            raise ValueError("duplicate bundle message ID")
+        fields = (
+            "scan_id",
+            "sensor_id",
+            "config_revision",
+            "calibration_version",
+            "coordinate_frame_id",
+        )
+        required = {tuple(r[k] for k in fields) for r in assessment["evidence"]["scans"]}
+        supplied = set()
+        for payload in messages[:-1]:
+            if (
+                payload["message_type"] != "lidar_measurement"
+                or payload["delivery_kind"] != "EVIDENCE"
+                or payload["assessment_ids"] != [assessment["assessment_id"]]
+                or any(
+                    payload[k] != assessment[k] for k in ("site_id", "edge_id", "config_revision")
+                )
+            ):
+                raise ValueError("invalid judgment evidence envelope")
+            for sensor in payload["sensors"]:
+                if sensor["scan"]:
+                    supplied.add(
+                        (
+                            sensor["scan"]["scan_id"],
+                            sensor["sensor_id"],
+                            payload["config_revision"],
+                            sensor["calibration_version"],
+                            payload["coordinate_frame_id"],
+                        )
+                    )
+        if required != supplied:
+            raise ValueError("bundle evidence does not match judgment references")
+        return assessment, required
+
+    def enqueue_bundle(self, messages):
+        """Local convenience; streaming IPC uses begin/enqueue/commit with the same protection."""
+        assessment, required = self._validate_bundle(messages)
+        if not required:
+            return self.enqueue(assessment)
+        manifest = [
+            {"message_id": p["message_id"], "digest": hashlib.sha256(canonical(p)).hexdigest()}
+            for p in messages[:-1]
+        ]
+        self.begin_bundle(assessment, manifest)
+        try:
+            for payload in messages[:-1]:
+                self.enqueue(payload)
+            return self.commit_bundle(assessment)
+        except BaseException:
+            self.release(assessment["message_id"])
+            raise
+
+    def begin_bundle(self, assessment, manifest):
+        validate_message(assessment)
+        if assessment["message_type"] != "edge_assessment":
+            raise ValueError("bundle must end with assessment")
+        if not isinstance(manifest, list) or not 1 <= len(manifest) <= 16:
+            raise ValueError("invalid evidence manifest")
+        expected = {}
+        for row in manifest:
+            identifier(row["message_id"])
+            digest = row["digest"]
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(c not in "0123456789abcdef" for c in digest)
+                or row["message_id"] in expected
+                or row["message_id"] == assessment["message_id"]
+            ):
+                raise ValueError("invalid evidence digest or identity")
+            expected[row["message_id"]] = digest
+        scan_ids = [r["scan_id"] for r in assessment["evidence"]["scans"]]
+        if not scan_ids or len(scan_ids) > 32:
+            raise ValueError("invalid bundle references")
+        owner = assessment["message_id"]
+        digest = hashlib.sha256(canonical(assessment)).hexdigest()
+        previous = self.meta["leases"].get(owner)
+        if previous and (
+            previous.get("assessment_digest") != digest
+            or previous.get("evidence_manifest") != expected
+        ):
+            raise ConflictError("bundle identity conflict")
+        if previous is None and len(self.meta["leases"]) >= 16:
+            raise CapacityError("active reference limit")
+        self.meta["leases"][owner] = {
+            "scans": sorted(set(scan_ids)),
+            "expires_at": time.time() + 300,
+            "assessment_digest": digest,
+            "evidence_manifest": expected,
+        }
+        try:
+            self._save_meta()
+        except BaseException:
+            if previous is None:
+                self.meta["leases"].pop(owner, None)
+            else:
+                self.meta["leases"][owner] = previous
+            raise
+
+    def commit_bundle(self, assessment):
+        validate_message(assessment)
+        owner = assessment["message_id"]
+        lease = self.meta["leases"].get(owner)
+        if (
+            lease is None
+            or lease["expires_at"] <= time.time()
+            or lease.get("assessment_digest") != hashlib.sha256(canonical(assessment)).hexdigest()
+        ):
+            raise ValueError("bundle preparation missing, expired or changed")
+        try:
+            fields = (
+                "scan_id",
+                "sensor_id",
+                "config_revision",
+                "calibration_version",
+                "coordinate_frame_id",
+            )
+            required = {tuple(r[k] for k in fields) for r in assessment["evidence"]["scans"]}
+            supplied = set()
+            for mid, digest in lease["evidence_manifest"].items():
+                record = self.get(mid)
+                if record is None or record["state"] == "quarantine":
+                    raise ValueError("bundle evidence unavailable")
+                payload = record["payload"]
+                if (
+                    hashlib.sha256(canonical(payload)).hexdigest() != digest
+                    or payload["message_type"] != "lidar_measurement"
+                    or payload["delivery_kind"] != "EVIDENCE"
+                    or payload["assessment_ids"] != [assessment["assessment_id"]]
+                    or any(
+                        payload[k] != assessment[k]
+                        for k in ("site_id", "edge_id", "config_revision")
+                    )
+                ):
+                    raise ValueError("bundle evidence identity mismatch")
+                for s in payload["sensors"]:
+                    if s["scan"]:
+                        supplied.add(
+                            (
+                                s["scan"]["scan_id"],
+                                s["sensor_id"],
+                                payload["config_revision"],
+                                s["calibration_version"],
+                                payload["coordinate_frame_id"],
+                            )
+                        )
+            if supplied != required:
+                raise ValueError("bundle evidence references mismatch")
+            return self.enqueue(assessment)
+        finally:
+            self.release(owner)
 
     def _protected(self, now=None):
         now = time.time() if now is None else now

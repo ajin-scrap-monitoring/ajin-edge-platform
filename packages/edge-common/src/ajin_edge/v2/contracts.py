@@ -3,6 +3,7 @@
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
+from .judgment_schema import JUDGMENT_SCHEMA, SECTION_PROFILE_SCHEMA
 from .processing import SAFE_INT, canonical, identifier, integer, validate_configuration
 
 
@@ -166,6 +167,7 @@ ASSESSMENT_SCHEMA = message_schema(
     },
     {"original_message_id": ID},
 )
+ASSESSMENT_SCHEMA["properties"]["section_profile"] = nullable(SECTION_PROFILE_SCHEMA)
 STATUS_SCHEMA = message_schema(
     "edge_status",
     {
@@ -266,6 +268,7 @@ SCHEMAS = {
     "edge_status": STATUS_SCHEMA,
     "edge_configuration": CONFIGURATION_SCHEMA,
 }
+CONFIGURATION_SCHEMA["properties"]["judgment"] = JUDGMENT_SCHEMA
 VALIDATORS = {
     key: Draft202012Validator(schema, format_checker=FormatChecker())
     for key, schema in SCHEMAS.items()
@@ -409,3 +412,67 @@ def _assessment(payload):
 
         if datetime.fromisoformat(start) > datetime.fromisoformat(end):
             raise ValueError("reversed observation interval")
+    profile = payload.get("section_profile")
+    if profile is not None:
+        _section_profile(profile)
+        if not payload["evidence"]["scans"] or payload["rule_version"] is None:
+            raise ValueError("section profile requires calculation evidence and rule")
+        if any(
+            r["coordinate_frame_id"] != profile["coordinate_frame_id"]
+            for r in payload["evidence"]["scans"]
+        ):
+            raise ValueError("section coordinate frame mismatch")
+        if profile["area_ratio"] is None and payload["fill_estimate"] is not None:
+            raise ValueError("incomplete section cannot produce fill")
+
+
+def _section_profile(profile):
+    import math
+
+    bins = profile["bins"]
+    if [b["index"] for b in bins] != list(range(len(bins))):
+        raise ValueError("section bins must be contiguous and ordered")
+    active = [b for b in bins if b["source"] != "MASKED"]
+    if not active or not math.isclose(sum(x * x for x in profile["axis_xy"]), 1, abs_tol=1e-8):
+        raise ValueError("invalid section axis or empty domain")
+    for b in bins:
+        if b["ceiling_z_mm"] <= b["floor_z_mm"] or len(set(b["sensor_ids"])) != len(
+            b["sensor_ids"]
+        ):
+            raise ValueError("invalid section bin")
+        valid = b["source"] in ("OBSERVED", "INTERPOLATED")
+        if valid != (b["height_mm"] is not None):
+            raise ValueError("section bin availability mismatch")
+        if valid and not 0 <= b["height_mm"] <= b["ceiling_z_mm"] - b["floor_z_mm"]:
+            raise ValueError("section height outside capacity")
+        expected_refs = (
+            (1, 2) if b["source"] == "OBSERVED" else (2,) if b["source"] == "CONFLICT" else (0,)
+        )
+        if len(b["sensor_ids"]) not in expected_refs:
+            raise ValueError("section bin source mismatch")
+    width = profile["bin_width_mm"]
+    capacity = sum(width * (b["ceiling_z_mm"] - b["floor_z_mm"]) for b in active)
+    complete = all(b["height_mm"] is not None for b in active)
+    if not math.isclose(capacity, profile["capacity_area_mm2"], rel_tol=1e-9, abs_tol=1e-6):
+        raise ValueError("section capacity mismatch")
+    if complete != (profile["area_mm2"] is not None and profile["area_ratio"] is not None):
+        raise ValueError("section total availability mismatch")
+    if not complete and (profile["area_mm2"] is not None or profile["area_ratio"] is not None):
+        raise ValueError("partial section total")
+    if complete:
+        area = sum(width * b["height_mm"] for b in active)
+        if not math.isclose(
+            area, profile["area_mm2"], rel_tol=1e-9, abs_tol=1e-6
+        ) or not math.isclose(area / capacity, profile["area_ratio"], rel_tol=1e-9, abs_tol=1e-9):
+            raise ValueError("section area mismatch")
+    coverage = sum(b["source"] == "OBSERVED" for b in active) / len(active)
+    if not math.isclose(coverage, profile["coverage_ratio"], abs_tol=1e-9):
+        raise ValueError("section coverage mismatch")
+    stats = profile["sensor_stats"]
+    sensor_ids = {s["sensor_id"] for s in stats}
+    if len(sensor_ids) != len(stats) or any(
+        s["retained_points"] > s["input_points"] for s in stats
+    ):
+        raise ValueError("invalid section sensor statistics")
+    if any(not set(b["sensor_ids"]) <= sensor_ids for b in bins):
+        raise ValueError("unknown section sensor")

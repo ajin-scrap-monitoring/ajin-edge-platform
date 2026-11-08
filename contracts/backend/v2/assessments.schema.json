@@ -326,6 +326,203 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 128
+    },
+    "section_profile": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "coordinate_frame_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "origin_xy_mm": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": -1000000000.0,
+                "maximum": 1000000000.0
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "axis_xy": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": -1,
+                "maximum": 1
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "bin_width_mm": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000
+            },
+            "bins": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 511
+                  },
+                  "floor_z_mm": {
+                    "type": "number",
+                    "minimum": -1000000000.0,
+                    "maximum": 1000000000.0
+                  },
+                  "ceiling_z_mm": {
+                    "type": "number",
+                    "minimum": -1000000000.0,
+                    "maximum": 1000000000.0
+                  },
+                  "height_mm": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 2000000000.0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "source": {
+                    "enum": [
+                      "OBSERVED",
+                      "INTERPOLATED",
+                      "UNAVAILABLE",
+                      "MASKED",
+                      "CONFLICT"
+                    ]
+                  },
+                  "sensor_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "minItems": 0,
+                    "maxItems": 2
+                  }
+                },
+                "required": [
+                  "index",
+                  "floor_z_mm",
+                  "ceiling_z_mm",
+                  "height_mm",
+                  "source",
+                  "sensor_ids"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1,
+              "maxItems": 512
+            },
+            "area_mm2": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1e+21
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "capacity_area_mm2": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1e+21
+            },
+            "area_ratio": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "coverage_ratio": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "sensor_stats": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "sensor_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "scan_count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8
+                  },
+                  "input_points": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "retained_points": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "spatial_rejected_bins": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "sensor_id",
+                  "scan_count",
+                  "input_points",
+                  "retained_points",
+                  "spatial_rejected_bins"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "coordinate_frame_id",
+            "origin_xy_mm",
+            "axis_xy",
+            "bin_width_mm",
+            "bins",
+            "area_mm2",
+            "capacity_area_mm2",
+            "area_ratio",
+            "coverage_ratio",
+            "sensor_stats"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

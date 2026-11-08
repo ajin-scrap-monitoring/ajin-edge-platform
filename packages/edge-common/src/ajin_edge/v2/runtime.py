@@ -133,21 +133,33 @@ class PendingSender:
         self.queue = deque()
 
     def offer(self, payload):
+        if isinstance(payload, list) and (not payload or len(payload) > 17):
+            raise ValueError("judgment bundle must contain 1..17 messages")
         if len(self.queue) >= self.capacity:
-            self.queue.popleft()
+            dropped = self.queue.popleft()
             self.status.lost("LOCAL_DELIVERY_BACKLOG_LOSS")
+            if isinstance(dropped, list):
+                self.status.losses += len(dropped) - 1
         self.queue.append(payload)
 
     async def run(self):
+        pending = None
         while True:
-            if self.queue:
-                payload = self.queue[0]
+            delay = 0.1
+            if pending is None and self.queue:
+                pending = self.queue.popleft()
+            if pending is not None:
                 try:
-                    await self.client.enqueue(payload)
+                    if isinstance(pending, list) and len(pending) > 1:
+                        await self.client.enqueue_bundle(pending)
+                    else:
+                        await self.client.enqueue(
+                            pending[0] if isinstance(pending, list) else pending
+                        )
+                    delay = 0
                     if self.status.reason == "LOCAL_DELIVERY_UNAVAILABLE":
                         self.status.reason = ""
-                    if self.queue and self.queue[0] is payload:
-                        self.queue.popleft()
+                    pending = None
                 except grpc.aio.AioRpcError as error:
                     self.status.reason = "LOCAL_DELIVERY_UNAVAILABLE"
                     if error.code() in (
@@ -155,10 +167,9 @@ class PendingSender:
                         grpc.StatusCode.ALREADY_EXISTS,
                     ):
                         # Do not spin indefinitely on a locally rejected body.
-                        if self.queue and self.queue[0] is payload:
-                            self.queue.popleft()
-                            self.status.losses += 1
-            await asyncio.sleep(0.1)
+                        self.status.losses += len(pending) if isinstance(pending, list) else 1
+                        pending = None
+            await asyncio.sleep(delay if self.queue or pending is not None else 0.1)
 
 
 async def register(client, registration, gate, status):
@@ -279,13 +290,16 @@ async def uplink(config, stop):
                         await asyncio.sleep(1)
                         continue
                     transport.token = token
+                    progressed = False
                     try:
-                        await worker.step()
+                        progressed = await worker.step()
                     except (CapacityError, OSError):
                         worker.reason = "STORAGE_UNAVAILABLE"
                     status.progress = worker.last_progress_at
                     status.reason = worker.reason
-                    await asyncio.sleep(0.1)
+                    # EVIDENCE can arrive in bounded bursts above the 1Hz periodic feed.
+                    # Backoff/auth pauses still return False and retain the idle delay.
+                    await asyncio.sleep(0 if progressed else 0.1)
 
             async def report():
                 while True:
@@ -394,7 +408,8 @@ async def orchestrator(config, stop):
     observation_instance = None
     async with grpc.aio.insecure_channel(config["delivery_endpoint"], options=OPTIONS) as channel:
         client = DeliveryStub(channel)
-        sender = PendingSender(client, status)
+        # One pending judgment bundle, bounded at 2*8 evidence scans plus its assessment.
+        sender = PendingSender(client, status, capacity=1)
         configured = asyncio.Event()
 
         async def consume():
@@ -479,7 +494,7 @@ async def orchestrator(config, stop):
             await configured.wait()
             while True:
                 start = time.monotonic()
-                sender.offer(orch.assessment())
+                sender.offer(await asyncio.to_thread(orch.assessment_bundle))
                 await asyncio.sleep(max(0, 1 - (time.monotonic() - start)))
 
         with Watchdog() as watchdog:
