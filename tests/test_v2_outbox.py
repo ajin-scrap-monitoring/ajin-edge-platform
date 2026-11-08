@@ -112,3 +112,121 @@ def test_external_status_budget_is_reserved_and_reported(tmp_path):
         assert store.used_bytes() == spool_before + 32768
         assert store.stats()["limit_bytes"] == 98304
         assert store.used_bytes() <= 98304
+
+
+def test_ack_of_protected_scan_succeeds_without_space_for_another_body(tmp_path):
+    with Outbox(tmp_path, limit_bytes=65536, reserve_bytes=16384) as store:
+        first = message()
+        store.enqueue(first)
+        store.protect("live-judgment", [first["sensors"][0]["scan"]["scan_id"]], expires_at=10**12)
+        for _ in range(30):
+            try:
+                store.enqueue(message())
+            except CapacityError:
+                break
+        else:
+            pytest.fail("test did not fill protected storage")
+        losses = store.stats()["lost_messages"]
+        store.delivered(first["message_id"], "2026-09-20T01:00:00Z")
+        assert store.get(first["message_id"])["state"] == "acked"
+        assert store.stats()["lost_messages"] == losses
+    with Outbox(tmp_path, limit_bytes=65536, reserve_bytes=16384) as store:
+        assert store.inspect(first["message_id"])["remote_acked"] is True
+        assert store.get(first["message_id"])["state"] == "acked"
+
+
+def test_protected_acks_remain_durable_after_receipt_rotation(tmp_path):
+    bodies = [message() for _ in range(40)]
+    with Outbox(tmp_path) as store:
+        store.protect(
+            "live-judgment", [bodies[0]["sensors"][0]["scan"]["scan_id"]], expires_at=10**12
+        )
+        for body in bodies:
+            store.enqueue(body)
+            store.delivered(body["message_id"], "2026-09-20T01:00:00Z")
+        assert len(store.meta["receipts"]) == 32
+    with Outbox(tmp_path) as store:
+        assert store.next_ready() is None
+        for body in bodies:
+            assert store.inspect(body["message_id"])["remote_acked"] is True
+            assert store.get(body["message_id"])["payload"] == body
+        store.release("live-judgment")
+        assert not store.index
+
+
+def test_failed_ack_persistence_does_not_publish_a_false_receipt(tmp_path, monkeypatch):
+    body = message()
+    with Outbox(tmp_path) as store:
+        store.enqueue(body)
+
+        def no_space():
+            raise CapacityError("diagnostic write unavailable")
+
+        monkeypatch.setattr(store, "_save_meta", no_space)
+        with pytest.raises(CapacityError):
+            store.delivered(body["message_id"], "2026-09-20T01:00:00Z")
+        assert not store.inspect(body["message_id"])["remote_acked"]
+        assert store.get(body["message_id"])["state"] == "pending"
+    with Outbox(tmp_path) as store:
+        assert not store.inspect(body["message_id"])["remote_acked"]
+
+
+def test_ack_rotation_at_full_protected_capacity_remains_durable(tmp_path):
+    # tmpfs/overlay and Windows allocate small files differently. Size the
+    # fixture from the actual filesystem so at least 33 receipts can rotate.
+    with Outbox(tmp_path / "probe") as probe:
+        sample = message()
+        probe.enqueue(sample)
+        stat = probe.index[sample["message_id"]]["path"].stat()
+        allocation = max(probe._allocation(stat.st_size), getattr(stat, "st_blocks", 0) * 512)
+    limit = allocation * 64 + 65536
+    directory = tmp_path / "full"
+    bodies = []
+    with Outbox(directory, limit_bytes=limit, reserve_bytes=16384) as store:
+        first = message()
+        store.protect("live", [first["sensors"][0]["scan"]["scan_id"]], expires_at=10**12)
+        for _ in range(128):
+            body = message()
+            try:
+                store.enqueue(body)
+                bodies.append(body)
+            except CapacityError:
+                break
+        else:
+            pytest.fail("test did not fill protected storage")
+        assert len(bodies) > 32
+        for body in bodies:
+            store.delivered(body["message_id"], "2026-09-20T01:00:00Z")
+    with Outbox(directory, limit_bytes=limit, reserve_bytes=16384) as store:
+        assert store.next_ready() is None
+        assert all(store.inspect(b["message_id"])["remote_acked"] for b in bodies)
+        store.release("live")
+        assert not store.index
+
+
+def test_receipt_rotation_can_retry_a_failed_directory_sync(tmp_path, monkeypatch):
+    bodies = [message() for _ in range(33)]
+    with Outbox(tmp_path) as store:
+        store.protect("live", [bodies[0]["sensors"][0]["scan"]["scan_id"]], expires_at=10**12)
+        for body in bodies:
+            store.enqueue(body)
+        for body in bodies[:32]:
+            store.delivered(body["message_id"], "2026-09-20T01:00:00Z")
+        sync = store._sync_directory
+        calls = 0
+
+        def fail_once():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("temporary directory sync failure")
+            sync()
+
+        monkeypatch.setattr(store, "_sync_directory", fail_once)
+        with pytest.raises(OSError):
+            store.delivered(bodies[-1]["message_id"], "2026-09-20T01:00:00Z")
+        assert store.get(bodies[0]["message_id"])["state"] == "acked"
+        assert not store.inspect(bodies[-1]["message_id"])["remote_acked"]
+        store.delivered(bodies[-1]["message_id"], "2026-09-20T01:00:00Z")
+    with Outbox(tmp_path) as store:
+        assert store.next_ready() is None

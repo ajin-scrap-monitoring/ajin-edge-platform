@@ -47,6 +47,67 @@ async def test_judgment_bundle_sends_all_evidence_before_assessment():
         await asyncio.gather(task, return_exceptions=True)
 
 
+async def test_judgment_producer_waits_before_building_next_bundle_when_delivery_is_slow():
+    blocked, release = asyncio.Event(), asyncio.Event()
+    delivered, built = [], []
+
+    class Client:
+        async def enqueue_bundle(self, bodies):
+            if not delivered:
+                blocked.set()
+                await release.wait()
+            delivered.append(bodies[-1]["id"])
+
+    status = Status()
+    sender = PendingSender(Client(), status, capacity=1)
+    assert hasattr(sender, "wait_for_capacity"), "producer needs admission before building a bundle"
+
+    async def produce():
+        for index in range(3):
+            await sender.wait_for_capacity()
+            built.append(index)
+            sender.offer([{"id": f"scan-{index}"}, {"id": f"assessment-{index}"}])
+
+    worker = asyncio.create_task(sender.run())
+    producer = asyncio.create_task(produce())
+    try:
+        async with asyncio.timeout(1):
+            await blocked.wait()
+            while len(built) < 2:
+                await asyncio.sleep(0)
+        await asyncio.sleep(0.02)
+        assert built == [0, 1]  # No third completed bundle retained outside the queue.
+        assert not producer.done()
+        assert len(sender.queue) == 1
+        assert status.losses == 0
+        release.set()
+        await asyncio.wait_for(producer, 1)
+        async with asyncio.timeout(1):
+            while len(delivered) < 3:
+                await asyncio.sleep(0.001)
+        assert delivered == [f"assessment-{i}" for i in range(3)]
+        assert status.losses == 0
+    finally:
+        worker.cancel()
+        producer.cancel()
+        await asyncio.gather(worker, producer, return_exceptions=True)
+
+
+async def test_cancelled_capacity_wait_does_not_remove_or_replace_queued_bundle():
+    status = Status()
+    sender = PendingSender(None, status, capacity=1)
+    assert hasattr(sender, "wait_for_capacity"), "capacity wait must be cancellation-safe"
+    original = [{"id": "scan"}, {"id": "assessment"}]
+    sender.offer(original)
+    wait = asyncio.create_task(sender.wait_for_capacity())
+    await asyncio.sleep(0)
+    assert not wait.done()
+    wait.cancel()
+    await asyncio.gather(wait, return_exceptions=True)
+    assert list(sender.queue) == [original]
+    assert status.losses == 0
+
+
 async def test_evidence_local_rejection_does_not_send_dependent_assessment():
     received = []
 
@@ -182,7 +243,10 @@ def test_malformed_bundle_is_rejected_before_any_write(tmp_path):
         assert not store.index
 
 
-async def test_bundle_transport_keeps_each_scan_in_its_own_rpc():
+async def test_bundle_transport_bounds_each_stage_rpc(monkeypatch):
+    from ajin_edge.v2 import ipc
+
+    monkeypatch.setattr(ipc, "BUNDLE_RPC_BYTES", 8192)
     calls = []
 
     class SmallTransport(DeliveryStub):
@@ -198,7 +262,110 @@ async def test_bundle_transport_keeps_each_scan_in_its_own_rpc():
     assert len(canonical(bundle)) > 8192
     await SmallTransport(None).enqueue_bundle(bundle)
     assert max(n for _, n in calls) <= 8192
-    assert sum(method == "Enqueue" for method, _ in calls) == len(bundle) - 1
+    assert all(method == "Bundle" for method, _ in calls)
+    assert len(calls) < len(bundle) + 1
+
+
+async def test_real_ipc_stages_durable_evidence_before_committing_judgment(tmp_path):
+    from ajin_edge.v2.ipc import serve_delivery
+
+    bundle = judgment_bundle()
+    assessment = bundle[-1]
+    with Outbox(tmp_path) as store:
+        server, port = await serve_delivery(
+            store, "127.0.0.1:0", site_id=assessment["site_id"], edge_id=assessment["edge_id"]
+        )
+        try:
+            async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+                await DeliveryStub(channel).enqueue_bundle(bundle)
+            assert all(store.get(body["message_id"])["payload"] == body for body in bundle)
+            assert not store.meta["leases"]
+        finally:
+            await server.stop(1)
+    with Outbox(tmp_path) as store:
+        assert len(store.index) == len(bundle)
+
+
+async def test_server_rejects_oversized_bundle_rpc_before_storage(tmp_path, monkeypatch):
+    from ajin_edge.v2 import ipc
+
+    monkeypatch.setattr(ipc, "BUNDLE_RPC_BYTES", 1024)
+    with Outbox(tmp_path) as store:
+        server, port = await ipc.serve_delivery(
+            store, "127.0.0.1:0", site_id="site-example", edge_id="edge-example"
+        )
+        try:
+            async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+                with pytest.raises(grpc.aio.AioRpcError) as failure:
+                    await DeliveryStub(channel)._call("Bundle", {"padding": "x" * 2048})
+                assert failure.value.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
+            assert not store.index and not store.meta["leases"]
+        finally:
+            await server.stop(1)
+
+
+def test_stage_directory_sync_failure_can_retry_without_false_assessment(tmp_path, monkeypatch):
+    import hashlib
+
+    bundle = judgment_bundle()
+    with Outbox(tmp_path) as store:
+        store.begin_bundle(
+            bundle[-1],
+            [
+                {"message_id": b["message_id"], "digest": hashlib.sha256(canonical(b)).hexdigest()}
+                for b in bundle[:-1]
+            ],
+        )
+        sync = store._sync_directory
+
+        def fail():
+            raise OSError("directory barrier unavailable")
+
+        monkeypatch.setattr(store, "_sync_directory", fail)
+        with pytest.raises(OSError):
+            store.stage_bundle(bundle[-1], bundle[:4])
+        assert store.get(bundle[-1]["message_id"]) is None
+        monkeypatch.setattr(store, "_sync_directory", sync)
+        for offset in range(0, len(bundle) - 1, 4):
+            store.stage_bundle(bundle[-1], bundle[offset : min(offset + 4, len(bundle) - 1)])
+        store.commit_bundle(bundle[-1])
+        assert all(store.get(b["message_id"]) for b in bundle)
+
+
+def test_retry_restores_acked_evidence_after_lease_was_released(tmp_path):
+    import hashlib
+
+    bundle = judgment_bundle()
+    manifest = [
+        {"message_id": b["message_id"], "digest": hashlib.sha256(canonical(b)).hexdigest()}
+        for b in bundle[:-1]
+    ]
+    with Outbox(tmp_path) as store:
+        store.begin_bundle(bundle[-1], manifest)
+        store.stage_bundle(bundle[-1], bundle[:4])
+        for body in bundle[:4]:
+            store.delivered(body["message_id"], "2026-09-20T01:00:00Z")
+        store.release(bundle[-1]["message_id"])
+        assert all(store.get(b["message_id"]) is None for b in bundle[:4])
+        store.begin_bundle(bundle[-1], manifest)
+        for offset in range(0, len(bundle) - 1, 4):
+            store.stage_bundle(bundle[-1], bundle[offset : min(offset + 4, len(bundle) - 1)])
+        store.commit_bundle(bundle[-1])
+        assert all(store.get(b["message_id"]) for b in bundle)
+
+
+async def test_transient_stage_failure_keeps_lease_for_retry():
+    operations = []
+
+    class Interrupted(DeliveryStub):
+        async def _call(self, method, value):
+            operations.append(value["operation"])
+            if value["operation"] == "stage":
+                raise grpc.aio.AioRpcError(grpc.StatusCode.UNAVAILABLE, None, None, "interrupted")
+
+    with pytest.raises(grpc.aio.AioRpcError):
+        await Interrupted(None).enqueue_bundle(judgment_bundle())
+    assert operations == ["begin", "stage"]
 
 
 def test_staged_evidence_survives_ack_before_assessment_commit(tmp_path):

@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from .contracts import validate_message
 from .judgment import SectionJudgment, fill_enabled, is_independent
-from .processing import canonical, envelope, utc_now, validate_configuration
+from .processing import canonical, copy_observation, envelope, utc_now, validate_configuration
 
 
 class ConfigurationGate:
@@ -264,7 +264,7 @@ class Orchestrator:
             "coordinate_frame_id": self.config["coordinate_frame"]["frame_id"],
             "pair_state": "NOT_APPLICABLE",
             "pair_delta_ms": None,
-            "sensors": [deepcopy(observation)],
+            "sensors": [copy_observation(observation)],
             "assessment_ids": list(assessment_ids),
         }
         validate_message(payload)

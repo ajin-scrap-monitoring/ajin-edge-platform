@@ -2,10 +2,20 @@ import json
 from pathlib import Path
 
 from ajin_edge.contracts import HEARTBEAT_SCHEMA, MEASUREMENT_SCHEMA
+from ajin_edge.v2.calibration_schema import CONFIGURATION_REQUEST_SCHEMA
 from ajin_edge.v2.contracts import SCHEMAS
 from ajin_edge.v2.transport import PATHS
 
 target = Path(__file__).resolve().parents[1] / "contracts/backend/v1"
+control_target = target.parents[1] / "control/v1"
+control_target.mkdir(parents=True, exist_ok=True)
+(control_target / "configuration-request.schema.json").write_text(
+    json.dumps(
+        {"$schema": "https://json-schema.org/draft/2020-12/schema", **CONFIGURATION_REQUEST_SCHEMA},
+        indent=2,
+    )
+    + "\n"
+)
 target.mkdir(parents=True, exist_ok=True)
 for name, schema in (("measurement", MEASUREMENT_SCHEMA), ("edge-heartbeat", HEARTBEAT_SCHEMA)):
     (target / f"{name}.schema.json").write_text(json.dumps(schema, indent=2) + "\n")

@@ -11,6 +11,8 @@ import os
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 
@@ -153,8 +155,8 @@ class Outbox:
             finally:
                 os.close(descriptor)
 
-    def _atomic(self, path, value, *, reserved=False):
-        data = canonical(value)
+    def _atomic(self, path, value, *, reserved=False, sync=True, encoded=None):
+        data = canonical(value) if encoded is None else encoded
         needed = self._allocation(len(data))
         ceiling = self.limit - self.external_reserve - (0 if reserved else self.reserve)
         if (
@@ -170,7 +172,8 @@ class Outbox:
                 file.flush()
                 os.fsync(file.fileno())
             os.replace(temporary, path)
-            self._sync_directory()
+            if sync:
+                self._sync_directory()
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -190,8 +193,16 @@ class Outbox:
             return {s["scan_id"] for s in payload["evidence"]["scans"]}
         return set()
 
-    def _index(self, path, record):
+    def _index(self, path, record, *, payload_bytes=None):
         payload = record["payload"]
+        if path.name.endswith(".acked.record"):
+            record = {**record, "state": "acked"}
+        receipt = self.meta["receipts"].get(payload["message_id"])
+        if receipt is not None:
+            if receipt["digest"] != record["digest"]:
+                raise ValueError("persisted ACK conflicts with record")
+            if record["state"] == "pending":
+                record = {**record, "state": "acked"}
         self.index[payload["message_id"]] = {
             key: value for key, value in record.items() if key != "payload"
         }
@@ -201,35 +212,47 @@ class Outbox:
             delivery_kind=payload.get("delivery_kind"),
             scans=self._scans(payload),
             generated_at=payload["generated_at"],
-            payload_bytes=len(canonical(payload)),
+            payload_bytes=len(canonical(payload)) if payload_bytes is None else payload_bytes,
         )
 
     def get(self, message_id):
         item = self.index.get(message_id)
-        return json.loads(item["path"].read_bytes()) if item else None
+        if item is None:
+            return None
+        record = json.loads(item["path"].read_bytes())
+        if record["state"] == "pending" and (
+            message_id in self.meta["receipts"] or item["path"].name.endswith(".acked.record")
+        ):
+            record["state"] = "acked"
+        return record
 
-    def enqueue(self, payload):
-        validate_message(payload)
+    def enqueue(self, payload, *, sync=True, restore_acked=False):
+        encoded = validate_message(payload)
+        return self._enqueue_validated(payload, encoded, sync=sync, restore_acked=restore_acked)
+
+    def _enqueue_validated(self, payload, encoded, *, sync, restore_acked=False):
         mid = payload["message_id"]
-        digest = hashlib.sha256(canonical(payload)).hexdigest()
+        digest = hashlib.sha256(encoded).hexdigest()
         previous = self.index.get(mid) or self.meta["receipts"].get(mid)
         if previous:
             if previous["digest"] != digest:
                 raise ConflictError("same message ID has different content")
-            return True
+            if not (restore_acked and mid not in self.index):
+                return True
         record = {
             "payload": payload,
             "digest": digest,
-            "state": "pending",
+            "state": "acked" if mid in self.meta["receipts"] else "pending",
             "reason": None,
             "order": time.time_ns(),
         }
-        needed = self._allocation(len(canonical(record)))
+        record_bytes = canonical(record)
+        needed = self._allocation(len(record_bytes))
         try:
             self._make_room(needed)
             path = self._path(mid)
-            self._atomic(path, record)
-            self._index(path, record)
+            self._atomic(path, record, sync=sync, encoded=record_bytes)
+            self._index(path, record, payload_bytes=len(encoded))
         except (CapacityError, OSError):
             self._loss(payload, "STORAGE_FULL")
             raise CapacityError("message was not stored") from None
@@ -398,6 +421,45 @@ class Outbox:
         finally:
             self.release(owner)
 
+    def stage_bundle(self, assessment, payloads):
+        """Fsync each immutable file, then one directory barrier before the RPC ACK."""
+        if not isinstance(payloads, list) or not 1 <= len(payloads) <= 4:
+            raise ValueError("invalid bounded evidence batch")
+        owner = assessment["message_id"]
+        lease = self.meta["leases"].get(owner)
+        if (
+            lease is None
+            or lease["expires_at"] <= time.time()
+            or lease.get("assessment_digest") != hashlib.sha256(canonical(assessment)).hexdigest()
+        ):
+            raise ValueError("bundle preparation missing, expired or changed")
+        prepared = []
+        for payload in payloads:
+            encoded = validate_message(payload)
+            if (
+                payload.get("message_type") != "lidar_measurement"
+                or payload.get("delivery_kind") != "EVIDENCE"
+                or payload.get("assessment_ids") != [assessment["assessment_id"]]
+                or any(
+                    payload.get(k) != assessment[k]
+                    for k in ("site_id", "edge_id", "config_revision")
+                )
+                or lease["evidence_manifest"].get(payload["message_id"])
+                != hashlib.sha256(encoded).hexdigest()
+            ):
+                raise ValueError("evidence batch identity mismatch")
+            prepared.append((payload, encoded))
+        try:
+            for payload, encoded in prepared:
+                # A lost/expired preparation lease may have allowed collection
+                # of an ACKed body. Recreate its exact hash-matched evidence for
+                # local commit validation without losing the proven remote ACK.
+                self._enqueue_validated(payload, encoded, sync=False, restore_acked=True)
+        finally:
+            # Partial writes remain replayable and protected by the persisted
+            # lease; never acknowledge the batch before this barrier succeeds.
+            self._sync_directory()
+
     def _protected(self, now=None):
         now = time.time() if now is None else now
         active = {
@@ -414,10 +476,11 @@ class Outbox:
         }
         return active, referenced
 
-    def _delete(self, mid):
+    def _delete(self, mid, *, sync=True):
         self.index[mid]["path"].unlink()
         del self.index[mid]
-        self._sync_directory()
+        if sync:
+            self._sync_directory()
 
     def _make_room(self, needed, *, exclude=(), now=None):
         self.collect(now=now)
@@ -465,7 +528,11 @@ class Outbox:
         self._save_meta()
 
     def next_ready(self, *, pin=False):
-        items = [(mid, item) for mid, item in self.index.items() if item["state"] == "pending"]
+        items = [
+            (mid, item)
+            for mid, item in self.index.items()
+            if item["state"] == "pending" and mid not in self.inflight
+        ]
         if not items:
             return None
         selector = max if self.latest else min
@@ -485,25 +552,61 @@ class Outbox:
         self._make_room(self._allocation(len(canonical(record))), exclude=(mid,), now=now)
         if mid not in self.index:
             raise CapacityError("record evicted during update")
-        self._atomic(self._path(mid), record)
-        self._index(self._path(mid), record)
+        path = self.index[mid]["path"]
+        self._atomic(path, record)
+        self._index(path, record)
 
     def quarantine(self, mid, reason):
         self._change(mid, state="quarantine", reason=reason)
 
     def delivered(self, mid, received_at, *, now=None):
-        item = self.index[mid]
-        self.meta["last_backend_ack_at"] = received_at
-        self.meta["receipts"][mid] = {"digest": item["digest"]}
-        while len(self.meta["receipts"]) > 32:
-            del self.meta["receipts"][next(iter(self.meta["receipts"]))]
-        self._save_meta()
+        self.delivered_many([(mid, received_at)], now=now)
+
+    def delivered_many(self, receipts, *, now=None):
+        if not 1 <= len(receipts) <= 8 or len({mid for mid, _ in receipts}) != len(receipts):
+            raise ValueError("invalid bounded ACK batch")
+        items = {mid: self.index[mid] for mid, _ in receipts}
+        times = [at for _, at in receipts]
+        if self.meta["last_backend_ack_at"] is not None:
+            times.append(self.meta["last_backend_ack_at"])
+        newest = max(times, key=datetime.fromisoformat)
+        previous = deepcopy(self.meta)
+        try:
+            self.meta["last_backend_ack_at"] = newest
+            for mid, item in items.items():
+                self.meta["receipts"][mid] = {"digest": item["digest"]}
+            while len(self.meta["receipts"]) > 32:
+                oldest = next(iter(self.meta["receipts"]))
+                retained = self.index.get(oldest)
+                if retained is not None:
+                    # The old receipt already durably proves this ACK. Rename
+                    # the immutable body to carry that state without allocating
+                    # a second body at full protected capacity. Sync the rename
+                    # before removing the receipt. Both crash orders retain proof.
+                    path = retained["path"]
+                    if not path.name.endswith(".acked.record"):
+                        target = path.with_suffix(".acked.record")
+                        os.replace(path, target)
+                        retained.update(path=target, state="acked")
+                    self._sync_directory()
+                del self.meta["receipts"][oldest]
+            self._save_meta()
+        except BaseException:
+            self.meta = previous
+            raise
+        # The fsynced receipt is authoritative across restart; do not rewrite
+        # a large protected scan for every successful HTTP acknowledgement.
+        for item in items.values():
+            item["state"] = "acked"
         active, referenced = self._protected(now)
-        if item["scans"] & (active | referenced):
-            self._change(mid, state="acked", now=now)
-        else:
-            self._delete(mid)
-        self.collect(now=now)
+        changed = False
+        for mid, item in items.items():
+            if not item["scans"] & (active | referenced):
+                self._delete(mid, sync=False)
+                changed = True
+        changed = self.collect(now=now, sync=False) or changed
+        if changed:
+            self._sync_directory()
 
     def protect(self, owner, scan_ids, *, expires_at):
         if not owner or len(owner) > 128 or len(scan_ids) > 32:
@@ -518,7 +621,7 @@ class Outbox:
         self._save_meta()
         self.collect(now=now)
 
-    def collect(self, *, now=None):
+    def collect(self, *, now=None, sync=True):
         current = time.time() if now is None else now
         expired = [
             owner for owner, lease in self.meta["leases"].items() if lease["expires_at"] <= current
@@ -528,13 +631,18 @@ class Outbox:
                 del self.meta["leases"][owner]
             self._save_meta()
         active, referenced = self._protected(now)
+        changed = False
         for mid, item in list(self.index.items()):
             if (
                 mid not in self.inflight
                 and item["state"] == "acked"
                 and not item["scans"] & (active | referenced)
             ):
-                self._delete(mid)
+                self._delete(mid, sync=False)
+                changed = True
+        if changed and sync:
+            self._sync_directory()
+        return changed
 
     def stats(self):
         pending = [item for item in self.index.values() if item["state"] == "pending"]

@@ -14,6 +14,7 @@ from .processing import canonical
 
 SERVICE = "ajin.edge.v2.Delivery"
 OBSERVATIONS = "/ajin.edge.v2.Observations/Subscribe"
+BUNDLE_RPC_BYTES = 16 * 1024 * 1024
 # Internal transport allocation guard; not a backend request-size or point-selection policy.
 OPTIONS = [
     ("grpc.max_receive_message_length", 64 * 1024 * 1024),
@@ -38,21 +39,47 @@ class DeliveryStub:
         if not isinstance(messages, list) or not 2 <= len(messages) <= 17:
             raise ValueError("invalid evidence bundle size")
         assessment = messages[-1]
-        manifest = [
-            {"message_id": p["message_id"], "digest": hashlib.sha256(canonical(p)).hexdigest()}
-            for p in messages[:-1]
-        ]
+        manifest, sizes = [], []
+        for payload in messages[:-1]:
+            encoded = canonical(payload)
+            manifest.append(
+                {"message_id": payload["message_id"], "digest": hashlib.sha256(encoded).hexdigest()}
+            )
+            sizes.append(len(encoded))
         request = {"assessment": assessment}
         await self._call("Bundle", {**request, "operation": "begin", "evidence": manifest})
         try:
-            for payload in messages[:-1]:
-                await self.enqueue(payload)
+            batch = []
+            base_size = len(canonical({**request, "operation": "stage", "messages": []}))
+            batch_size = base_size
+            for payload, size in zip(messages[:-1], sizes, strict=True):
+                added = size + bool(batch)
+                if batch and (len(batch) == 4 or batch_size + added > BUNDLE_RPC_BYTES):
+                    await self._call("Bundle", {**request, "operation": "stage", "messages": batch})
+                    batch = []
+                    batch_size = base_size
+                    added = size
+                if batch_size + added > BUNDLE_RPC_BYTES:
+                    raise ValueError("individual evidence exceeds internal RPC capacity")
+                batch.append(payload)
+                batch_size += added
+            if batch:
+                await self._call("Bundle", {**request, "operation": "stage", "messages": batch})
             return await self._call("Bundle", {**request, "operation": "commit"})
-        except BaseException:
-            try:
-                await self._call("Bundle", {**request, "operation": "abort"})
-            except grpc.aio.AioRpcError:
-                pass  # The bounded persisted lease still expires after process/connection loss.
+        except BaseException as error:
+            permanent = isinstance(error, ValueError) or (
+                isinstance(error, grpc.aio.AioRpcError)
+                and error.code()
+                in (grpc.StatusCode.INVALID_ARGUMENT, grpc.StatusCode.ALREADY_EXISTS)
+            )
+            if permanent:
+                try:
+                    await self._call("Bundle", {**request, "operation": "abort"})
+                except grpc.aio.AioRpcError:
+                    pass
+            # A retryable failure/cancellation retains the bounded persisted
+            # lease. Otherwise already ACKed evidence could be collected before
+            # the same pending bundle retries. Abandoned leases still expire.
             raise
 
     async def inspect(self, message_id):
@@ -95,6 +122,8 @@ async def serve_delivery(store, endpoint, *, site_id, edge_id, latest_status=Non
             duplicate = False
             if operation == "begin":
                 await store.call("begin_bundle", assessment, request["evidence"])
+            elif operation == "stage":
+                await store.call("stage_bundle", assessment, request["messages"])
             elif operation == "commit":
                 duplicate = await store.call("commit_bundle", assessment)
             elif operation == "abort":
@@ -116,13 +145,23 @@ async def serve_delivery(store, endpoint, *, site_id, edge_id, latest_status=Non
     async def stats(request, context):
         return await store.call("stats")
 
+    async def bounded_bundle(decoded, context):
+        request, size = decoded
+        if size > BUNDLE_RPC_BYTES:
+            await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "bundle RPC capacity exceeded")
+        return await bundle(request, context)
+
     handlers = {
         name: grpc.unary_unary_rpc_method_handler(
-            callback, request_deserializer=json.loads, response_serializer=canonical
+            callback,
+            request_deserializer=(lambda data: (json.loads(data), len(data)))
+            if name == "Bundle"
+            else json.loads,
+            response_serializer=canonical,
         )
         for name, callback in (
             ("Enqueue", enqueue),
-            ("Bundle", bundle),
+            ("Bundle", bounded_bundle),
             ("Inspect", inspect),
             ("Stats", stats),
         )

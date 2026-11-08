@@ -127,7 +127,7 @@ FUSION_SETTINGS_SCHEMA = obj(
     {
         "method": {"enum": ["CALIBRATED_WEIGHTED_SECTIONS"]},
         "version": ID,
-        "verification_state": {"enum": ["VERIFIED", "UNVERIFIED"]},
+        "verification_state": {"enum": ["VERIFIED", "UNVERIFIED", "DEFAULT"]},
         "components": arr(
             obj(
                 {
@@ -145,7 +145,7 @@ INDEPENDENT_JUDGMENT_SCHEMA = obj(
     {
         "model_type": {"enum": ["INDEPENDENT_SECTIONS_V1"]},
         "method_version": ID,
-        "verification_state": {"enum": ["VERIFIED", "UNVERIFIED"]},
+        "verification_state": {"enum": ["VERIFIED", "UNVERIFIED", "DEFAULT"]},
         "sections": arr(SECTION_SETTINGS_SCHEMA, 2, 2),
         "window": LEGACY_JUDGMENT_SCHEMA["properties"]["window"],
         "fusion": optional(FUSION_SETTINGS_SCHEMA),

@@ -10,6 +10,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from .judgment_schema import JUDGMENT_SCHEMA
+from .processing import copy_observation
 from .section_profile import build_profile, geometry_matches
 
 
@@ -20,9 +21,9 @@ def is_independent(model):
 def fill_enabled(model):
     return bool(
         is_independent(model)
-        and model["verification_state"] == "VERIFIED"
+        and model["verification_state"] in ("VERIFIED", "DEFAULT")
         and model["fusion"]
-        and model["fusion"]["verification_state"] == "VERIFIED"
+        and model["fusion"]["verification_state"] in ("VERIFIED", "DEFAULT")
     )
 
 
@@ -127,6 +128,7 @@ class SectionJudgment:
         if not is_independent(self.model):
             return
         scan = observation["scan"]
+        owned = copy_observation(observation)
         with self.lock:
             history = self.history[observation["sensor_id"]]
             if history:
@@ -137,14 +139,14 @@ class SectionJudgment:
                     > self.model["window"]["max_age_ms"] * 1000000
                 ):
                     history.clear()
-            history.append(deepcopy(observation))
+            history.append(owned)
 
     def calculate(self, now_ns):
         if not self.model:
             return None, ["FILL_METHOD_NOT_CONFIGURED"], []
         if not is_independent(self.model):
             return None, ["LEGACY_SECTION_MODEL_UNSUPPORTED"], []
-        if self.model["verification_state"] != "VERIFIED":
+        if self.model["verification_state"] not in ("VERIFIED", "DEFAULT"):
             return None, ["FILL_METHOD_NOT_VALIDATED"], []
         window = self.model["window"]
         with self.lock:
@@ -165,6 +167,10 @@ class SectionJudgment:
             sid = section["sensor_id"]
             history = histories[sid]
             result, inputs = self._section(section, sensors[sid], history)
+            if self.model["verification_state"] == "DEFAULT":
+                result["reason_codes"] = sorted(set(result["reason_codes"]) | {"DEFAULT_SETTINGS"})
+                if result["state"] == "AVAILABLE":
+                    result["state"] = "LIMITED"
             results.append(result)
             used.extend(inputs)
         reasons = {r for result in results for r in result["reason_codes"]}
@@ -174,7 +180,7 @@ class SectionJudgment:
         combined = None
         if fusion is None:
             reasons.add("FILL_FUSION_NOT_CONFIGURED")
-        elif fusion["verification_state"] != "VERIFIED":
+        elif fusion["verification_state"] not in ("VERIFIED", "DEFAULT"):
             reasons.add("FILL_FUSION_NOT_VALIDATED")
         elif anchors is not None and all(r["state"] != "UNAVAILABLE" for r in results):
             ratios = {r["sensor_id"]: r["profile"]["area_ratio"] for r in results}
@@ -203,6 +209,8 @@ class SectionJudgment:
                 "pair_delta_ms": (max(anchors.values()) - min(anchors.values())) / 1000000,
                 "clock_domain_id": next(iter(histories.values()))[-1]["scan"]["clock_domain_id"],
             }
+        if fusion and fusion["verification_state"] == "DEFAULT":
+            reasons.add("DEFAULT_SETTINGS")
         return {"section_profiles": results, "fusion_result": combined}, sorted(reasons), used
 
     def _anchors(self, histories):

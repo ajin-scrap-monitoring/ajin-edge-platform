@@ -146,6 +146,29 @@ def round_mm(value):
     return result
 
 
+def copy_observation(observation):
+    """Own every mutable container in the fixed v2 observation wire type."""
+    result = {
+        **observation,
+        "angle_intervals_mdeg": [dict(i) for i in observation["angle_intervals_mdeg"]],
+        "transform_reason_codes": list(observation["transform_reason_codes"]),
+    }
+    scan = observation["scan"]
+    if scan is not None:
+        result["scan"] = {
+            **scan,
+            "points": [
+                {
+                    **p,
+                    "position_mm": dict(p["position_mm"]) if p["position_mm"] is not None else None,
+                    "calculation_reason_codes": list(p["calculation_reason_codes"]),
+                }
+                for p in scan["points"]
+            ],
+        }
+    return result
+
+
 def transform_scan(raw, sensor):
     validate_scan(raw)
     if raw["sensor_id"] != sensor["sensor_id"]:
@@ -180,8 +203,11 @@ def transform_scan(raw, sensor):
                 (cal["angle_sign"] * sample["angle_mdeg"] + cal["angle_zero_offset_mdeg"]) / 1000
             )
             r = sample["distance_mm"]
-            local = np.array([r * math.cos(theta), r * math.sin(theta), 0.0])
-            position = np.asarray(cal["rotation"]) @ local + cal["translation_mm"]
+            lx, ly = r * math.cos(theta), r * math.sin(theta)
+            position = [
+                row[0] * lx + row[1] * ly + t
+                for row, t in zip(cal["rotation"], cal["translation_mm"], strict=True)
+            ]
             point["position_mm"] = dict(zip(("x", "y", "z"), map(round_mm, position), strict=True))
         points.append(point)
     transformed.update(
@@ -236,7 +262,7 @@ class ProcessingEngine:
                 self.dropped_scans += 1
             queue.append(observation)
             self.rejected.discard(sensor_id)
-            return deepcopy(observation)
+            return copy_observation(observation)
         except (KeyError, TypeError, ValueError, OverflowError) as error:
             if sensor_id in self.sensors:
                 self.rejected.add(sensor_id)
@@ -254,7 +280,7 @@ class ProcessingEngine:
         # Prepare the expensive point-array copies before taking the wire timestamp.
         # No candidate is consumed until both monotonic and final UTC checks pass.
         preliminary, _ = self._choose(candidates)
-        prepared = {id(item): deepcopy(item) for item in preliminary if item is not None}
+        prepared = {id(item): copy_observation(item) for item in preliminary if item is not None}
         generated_at = generated_at or utc_now()
         generated = datetime.fromisoformat(generated_at)
         if generated.tzinfo is None:
@@ -283,7 +309,9 @@ class ProcessingEngine:
             queue = self.buffers[sensor_id]
             if selected is not None:
                 sensors.append(
-                    prepared[id(selected)] if id(selected) in prepared else deepcopy(selected)
+                    prepared[id(selected)]
+                    if id(selected) in prepared
+                    else copy_observation(selected)
                 )
                 # Consume selected and older candidates: do not report backwards in time.
                 self.buffers[sensor_id] = deque(

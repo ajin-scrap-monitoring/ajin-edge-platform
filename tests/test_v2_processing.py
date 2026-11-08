@@ -1,8 +1,15 @@
+import math
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
+import numpy as np
 import pytest
-from ajin_edge.v2.processing import ProcessingEngine, transform_scan, validate_configuration
+from ajin_edge.v2.processing import (
+    ProcessingEngine,
+    round_mm,
+    transform_scan,
+    validate_configuration,
+)
 
 
 def configuration():
@@ -90,6 +97,64 @@ def test_rounding_is_half_away_from_zero_and_float_calculation_retained():
     raw["samples"] = [{"angle_mdeg": 0, "distance_mm": 2, "quality": 63}]
     result = transform_scan(raw, sensor)
     assert result["scan"]["points"][0]["position_mm"] == {"x": 2, "y": 1, "z": 0}
+
+
+def test_full_scan_projection_matches_reference_rotation_without_changing_original_points():
+    sensor = configuration()["sensors"][0]
+    sensor["angle_intervals_mdeg"] = [{"start_inclusive": 0, "end_exclusive": 360000}]
+    a, b = 0.73, -0.32
+    rz = np.array([[math.cos(a), -math.sin(a), 0], [math.sin(a), math.cos(a), 0], [0, 0, 1]])
+    ry = np.array([[math.cos(b), 0, math.sin(b)], [0, 1, 0], [-math.sin(b), 0, math.cos(b)]])
+    cal = sensor["calibration"]
+    cal.update(
+        rotation=(rz @ ry).tolist(),
+        translation_mm=[-0.5, 1000.25, -2000.5],
+        angle_sign=-1,
+        angle_zero_offset_mdeg=1234,
+    )
+    raw = scan()
+    raw["samples"] = [
+        {
+            "angle_mdeg": i * 351 % 360000,
+            "distance_mm": i * 103 % 40000,
+            "quality": i % 256,
+            "sdk_invalid_range": i % 101 == 0,
+        }
+        for i in range(1025)
+    ]
+    original = deepcopy(raw)
+    result = transform_scan(raw, sensor)
+    for point in result["scan"]["points"]:
+        sample = raw["samples"][point["index"]]
+        assert all(point[k] == sample[k] for k in ("angle_mdeg", "distance_mm", "quality"))
+        if sample["sdk_invalid_range"]:
+            assert point["position_mm"] is None
+            continue
+        theta = math.radians((-sample["angle_mdeg"] + 1234) / 1000)
+        local = np.array(
+            [sample["distance_mm"] * math.cos(theta), sample["distance_mm"] * math.sin(theta), 0]
+        )
+        expected = np.asarray(cal["rotation"]) @ local + cal["translation_mm"]
+        assert point["position_mm"] == dict(
+            zip(("x", "y", "z"), map(round_mm, expected), strict=True)
+        )
+    assert raw == original
+
+
+def test_observation_snapshot_owns_every_mutable_wire_container():
+    from ajin_edge.v2 import processing
+
+    assert hasattr(processing, "copy_observation"), "observation snapshot copier is missing"
+    original = transform_scan(scan(), configuration()["sensors"][0])
+    before = deepcopy(original)
+    copied = processing.copy_observation(original)
+    assert copied == original
+    copied["angle_intervals_mdeg"][0]["end_exclusive"] = 100
+    copied["transform_reason_codes"].append("TEST")
+    copied["scan"]["points"][0]["position_mm"]["z"] = 0
+    copied["scan"]["points"][0]["calculation_reason_codes"].append("TEST")
+    copied["scan"]["points"].clear()
+    assert original == before
 
 
 def test_configuration_rejects_overlap_and_non_rotation():
@@ -249,7 +314,7 @@ def test_periodic_rechecks_utc_after_payload_preparation(monkeypatch):
     engine = ProcessingEngine(configuration(), clock_domain_id="boot-test")
     engine.ingest(scan(ms=0))
     prepared = [False]
-    original = module.deepcopy
+    original = module.copy_observation
 
     def copy_then_delay(value):
         result = original(value)
@@ -257,7 +322,7 @@ def test_periodic_rechecks_utc_after_payload_preparation(monkeypatch):
             prepared[0] = True
         return result
 
-    monkeypatch.setattr(module, "deepcopy", copy_then_delay)
+    monkeypatch.setattr(module, "copy_observation", copy_then_delay)
     monkeypatch.setattr(
         module,
         "utc_now",

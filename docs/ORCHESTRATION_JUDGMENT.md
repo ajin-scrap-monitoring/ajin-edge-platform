@@ -23,9 +23,17 @@ A/B 높이를 평균하거나 서로 빈 bin을 채우지 않고, 다른 단면�
 
 ## 설정과 기하
 
+설치 보정·단면·보정곡선·가중치는 [통합 설정 API](CONFIGURATION_API.md)로 갱신할 수 있다.
+백엔드 설정 ACK 후 활성화하며, 획득 revision과 계산 revision을 분리한다.
+기존 [설치 보정 전용 API](CALIBRATION_API.md)는 설치값만 갱신하는 호환 경로다.
+근거 전달은 내부 stage RPC당 최대4개·16MiB로 묶고 각 파일 동기화와 마지막 디렉터리 동기화 뒤에만
+저장 성공을 반환한다. 최종 판단은 모든 근거의 ID·해시·센서·revision 검증 후 저장한다.
+HTTP 전송은 최대4개 병렬이며 각 메시지의 저장 ACK와 재시도는 독립이다.
+
 판단 모델은 `INDEPENDENT_SECTIONS_V1`이다. sections는 등록된 두 sensor_id 각각의
 원점·수평 축·bin 폭·바닥·상한·마스크·필터·보간 한도를 가진다. 축·bin 수·폭·범위·용량·마스크는 달라도 된다.
-window는 공통 시간 정책이다. 기본 설치값은 자동 생성하지 않는다.
+window는 공통 시간 정책이다. 설정 누락 시 기본 설치값을 자동 적용하지 않는다.
+알려진 시뮬레이터용 기본 프로필은 API로 조회하고 명시적으로 요청할 수 있다.
 
 반사점은 `p = R × [r cosθ, r sinθ, 0] + t`다. 센서 평면 법선 n은 R의 세 번째 열이며
 `n · (p − t) = 0`이다. 수평 단위 축 u는 `n_x u_x + n_y u_y = 0`을 만족해야 한다.
@@ -56,8 +64,11 @@ fusion.method는 `CALIBRATED_WEIGHTED_SECTIONS`다. 두 component 각각에 sens
 종합 적재율 = Σ weight_s × calibration_s(q_s) / Σ weight_s
 ```
 
-기본 동일 가중치·기본 보정곡선은 없다. 설치와 적재 상태별 검증으로 설정을 정한다.
-judgment, 각 센서 보정과 fusion이 모두 VERIFIED여야 종합 수치를 제공한다.
+현재 시뮬레이터용 기본 프로필은 동일 가중치0.5/0.5와 항등 곡선 `[[0,0],[1,1]]`을 제공한다.
+내부1m 진단 단면의 추정 설정이며 현장의 전체 부피 보정값으로 검증된 것은 아니다.
+현장 설치와 적재 상태별 검증으로 운영 설정을 갱신한다.
+설치 보정은 VERIFIED여야 좌표를 사용한다. judgment와 fusion은 VERIFIED 또는 DEFAULT이면 계산한다.
+DEFAULT는 기본 설정의 추정치이며 LIMITED·DEFAULT_SETTINGS로 구분한다. UNVERIFIED는 계산 보류를 유지한다.
 두 단면으로 전체 부피를 정확히 복원한다고 주장하지 않는다. 예시의 0.25/0.75와 항등 곡선은 합성 시험값이다.
 
 ## 백엔드 전달 형식
@@ -87,6 +98,7 @@ judgment, 각 센서 보정과 fusion이 모두 VERIFIED여야 종합 수치를 
 | A/B 시간 불일치·다른 시계 | 각각 계산 가능 | null, SENSOR_TIME_MISMATCH |
 | 종합 설정 없음·미검증 | 각각 계산 가능 | null, FILL_FUSION_NOT_CONFIGURED / FILL_FUSION_NOT_VALIDATED |
 | 전체 판단 설정 미검증 | 모두 보류 | null, FILL_METHOD_NOT_VALIDATED |
+| 기본 판단·종합 설정 DEFAULT | 조건을 만족한 단면 계산 | 계산 가능 시 추정값, LIMITED와 DEFAULT_SETTINGS |
 | 계산 중 입력 만료 | 결과 보류 | null, INPUT_EXPIRED_DURING_JUDGMENT |
 
 유효 개별 단면만 있으면 전체 decision_state는 LIMITED이며 둘 다 계산 불가하면 UNAVAILABLE이다.
