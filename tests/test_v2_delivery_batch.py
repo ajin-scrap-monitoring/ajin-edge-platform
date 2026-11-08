@@ -5,35 +5,6 @@ from ajin_edge.v2.outbox import CapacityError, Outbox
 from ajin_edge.v2.transport import Result
 from ajin_edge.v2.worker import DeliveryWorker
 from test_v2_contracts import message
-from test_v2_judgment_delivery import judgment_bundle
-
-
-async def test_periodic_and_assessment_get_slots_during_an_evidence_burst(tmp_path):
-    from copy import deepcopy
-    from uuid import uuid4
-
-    sent = []
-
-    class Transport:
-        token = "test"
-
-        async def send(self, body):
-            sent.append(body)
-            return Result("accepted", received_at="2026-09-20T01:00:00Z")
-
-    bundle = judgment_bundle()
-    periodic, assessment = message(), bundle[-1]
-    with Outbox(tmp_path) as store:
-        for i in range(24):
-            if i == 12:
-                store.enqueue(periodic)
-                store.enqueue(assessment)
-            evidence = deepcopy(bundle[0])
-            evidence["message_id"] = str(uuid4())
-            store.enqueue(evidence)
-        await DeliveryWorker(store, Transport()).step(now=0)
-        assert {periodic["message_id"], assessment["message_id"]} <= {b["message_id"] for b in sent}
-        assert sum(b.get("delivery_kind") == "EVIDENCE" for b in sent) == 2
 
 
 async def test_independent_pending_posts_can_progress_concurrently_without_duplicate_selection(

@@ -80,7 +80,8 @@ async def test_http_calibration_ack_reloads_services_and_produces_verified_z(tmp
                     clock_domain_id="boot-test",
                 )
                 frame.samples.add(angle_mdeg=90000, distance_mm=1000, quality=100)
-                self.last_frame = frame
+                if self.last_frame is None:
+                    self.last_frame = frame
                 yield frame
                 await asyncio.sleep(0.1)
 
@@ -178,6 +179,7 @@ async def test_http_calibration_ack_reloads_services_and_produces_verified_z(tmp
                             for b in received
                             if b["message_type"] == "lidar_measurement"
                             and b["config_revision"] == "cal-update-1"
+                            and all(s["scan"] is not None for s in b["sensors"])
                         ]
                         if final["state"] == "APPLIED" and active:
                             break

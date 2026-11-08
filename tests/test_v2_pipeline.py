@@ -208,15 +208,27 @@ async def test_three_services_configuration_ack_then_raw_and_assessment(
             )
 
         # A slow local status RPC must not delay independent one-second judgments.
+        stats_entered, stats_release = asyncio.Event(), asyncio.Event()
+        original_stats = runtime.DeliveryStub.stats
+
         async def slow_stats(self):
-            await asyncio.sleep(5)
-            return {}
+            stats_entered.set()
+            await stats_release.wait()
+            return await original_stats(self)
 
         monkeypatch.setattr(runtime.DeliveryStub, "stats", slow_stats)
-        before = sum(body["message_type"] == "edge_assessment" for body in received)
-        await asyncio.sleep(2.5)
-        after = sum(body["message_type"] == "edge_assessment" for body in received)
-        assert after - before >= 2
+        try:
+            await asyncio.wait_for(stats_entered.wait(), 3)
+            before = sum(body["message_type"] == "edge_assessment" for body in received)
+            async with asyncio.timeout(4):
+                while sum(b["message_type"] == "edge_assessment" for b in received) - before < 2:
+                    for task in tasks:
+                        if task.done():
+                            await task
+                    await asyncio.sleep(0.01)
+            assert not stats_release.is_set()
+        finally:
+            stats_release.set()
     finally:
         stop.set()
         await asyncio.gather(*tasks)
