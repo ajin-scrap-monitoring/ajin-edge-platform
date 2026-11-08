@@ -155,7 +155,7 @@ class Outbox:
             finally:
                 os.close(descriptor)
 
-    def _atomic(self, path, value, *, reserved=False):
+    def _atomic(self, path, value, *, reserved=False, sync=True):
         data = canonical(value)
         needed = self._allocation(len(data))
         ceiling = self.limit - self.external_reserve - (0 if reserved else self.reserve)
@@ -172,7 +172,8 @@ class Outbox:
                 file.flush()
                 os.fsync(file.fileno())
             os.replace(temporary, path)
-            self._sync_directory()
+            if sync:
+                self._sync_directory()
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -225,7 +226,7 @@ class Outbox:
             record["state"] = "acked"
         return record
 
-    def enqueue(self, payload):
+    def enqueue(self, payload, *, sync=True):
         validate_message(payload)
         mid = payload["message_id"]
         digest = hashlib.sha256(canonical(payload)).hexdigest()
@@ -245,7 +246,7 @@ class Outbox:
         try:
             self._make_room(needed)
             path = self._path(mid)
-            self._atomic(path, record)
+            self._atomic(path, record, sync=sync)
             self._index(path, record)
         except (CapacityError, OSError):
             self._loss(payload, "STORAGE_FULL")
@@ -414,6 +415,39 @@ class Outbox:
             return self.enqueue(assessment)
         finally:
             self.release(owner)
+
+    def stage_bundle(self, assessment, payloads):
+        """Fsync each immutable file, then one directory barrier before the RPC ACK."""
+        if not isinstance(payloads, list) or not 1 <= len(payloads) <= 4:
+            raise ValueError("invalid bounded evidence batch")
+        owner = assessment["message_id"]
+        lease = self.meta["leases"].get(owner)
+        if (
+            lease is None
+            or lease["expires_at"] <= time.time()
+            or lease.get("assessment_digest") != hashlib.sha256(canonical(assessment)).hexdigest()
+        ):
+            raise ValueError("bundle preparation missing, expired or changed")
+        for payload in payloads:
+            if (
+                payload.get("message_type") != "lidar_measurement"
+                or payload.get("delivery_kind") != "EVIDENCE"
+                or payload.get("assessment_ids") != [assessment["assessment_id"]]
+                or any(
+                    payload.get(k) != assessment[k]
+                    for k in ("site_id", "edge_id", "config_revision")
+                )
+                or lease["evidence_manifest"].get(payload["message_id"])
+                != hashlib.sha256(canonical(payload)).hexdigest()
+            ):
+                raise ValueError("evidence batch identity mismatch")
+        try:
+            for payload in payloads:
+                self.enqueue(payload, sync=False)
+        finally:
+            # Partial writes remain replayable and protected by the persisted
+            # lease; never acknowledge the batch before this barrier succeeds.
+            self._sync_directory()
 
     def _protected(self, now=None):
         now = time.time() if now is None else now

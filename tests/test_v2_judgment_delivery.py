@@ -182,7 +182,10 @@ def test_malformed_bundle_is_rejected_before_any_write(tmp_path):
         assert not store.index
 
 
-async def test_bundle_transport_keeps_each_scan_in_its_own_rpc():
+async def test_bundle_transport_bounds_each_stage_rpc(monkeypatch):
+    from ajin_edge.v2 import ipc
+
+    monkeypatch.setattr(ipc, "BUNDLE_RPC_BYTES", 8192)
     calls = []
 
     class SmallTransport(DeliveryStub):
@@ -198,7 +201,56 @@ async def test_bundle_transport_keeps_each_scan_in_its_own_rpc():
     assert len(canonical(bundle)) > 8192
     await SmallTransport(None).enqueue_bundle(bundle)
     assert max(n for _, n in calls) <= 8192
-    assert sum(method == "Enqueue" for method, _ in calls) == len(bundle) - 1
+    assert all(method == "Bundle" for method, _ in calls)
+    assert len(calls) < len(bundle) + 1
+
+
+async def test_real_ipc_stages_durable_evidence_before_committing_judgment(tmp_path):
+    from ajin_edge.v2.ipc import serve_delivery
+
+    bundle = judgment_bundle()
+    assessment = bundle[-1]
+    with Outbox(tmp_path) as store:
+        server, port = await serve_delivery(
+            store, "127.0.0.1:0", site_id=assessment["site_id"], edge_id=assessment["edge_id"]
+        )
+        try:
+            async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+                await DeliveryStub(channel).enqueue_bundle(bundle)
+            assert all(store.get(body["message_id"])["payload"] == body for body in bundle)
+            assert not store.meta["leases"]
+        finally:
+            await server.stop(1)
+    with Outbox(tmp_path) as store:
+        assert len(store.index) == len(bundle)
+
+
+def test_stage_directory_sync_failure_can_retry_without_false_assessment(tmp_path, monkeypatch):
+    import hashlib
+
+    bundle = judgment_bundle()
+    with Outbox(tmp_path) as store:
+        store.begin_bundle(
+            bundle[-1],
+            [
+                {"message_id": b["message_id"], "digest": hashlib.sha256(canonical(b)).hexdigest()}
+                for b in bundle[:-1]
+            ],
+        )
+        sync = store._sync_directory
+
+        def fail():
+            raise OSError("directory barrier unavailable")
+
+        monkeypatch.setattr(store, "_sync_directory", fail)
+        with pytest.raises(OSError):
+            store.stage_bundle(bundle[-1], bundle[:4])
+        assert store.get(bundle[-1]["message_id"]) is None
+        monkeypatch.setattr(store, "_sync_directory", sync)
+        for offset in range(0, len(bundle) - 1, 4):
+            store.stage_bundle(bundle[-1], bundle[offset : min(offset + 4, len(bundle) - 1)])
+        store.commit_bundle(bundle[-1])
+        assert all(store.get(b["message_id"]) for b in bundle)
 
 
 def test_staged_evidence_survives_ack_before_assessment_commit(tmp_path):

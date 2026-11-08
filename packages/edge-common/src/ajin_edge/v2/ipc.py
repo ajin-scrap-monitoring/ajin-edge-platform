@@ -14,6 +14,7 @@ from .processing import canonical
 
 SERVICE = "ajin.edge.v2.Delivery"
 OBSERVATIONS = "/ajin.edge.v2.Observations/Subscribe"
+BUNDLE_RPC_BYTES = 16 * 1024 * 1024
 # Internal transport allocation guard; not a backend request-size or point-selection policy.
 OPTIONS = [
     ("grpc.max_receive_message_length", 64 * 1024 * 1024),
@@ -45,8 +46,20 @@ class DeliveryStub:
         request = {"assessment": assessment}
         await self._call("Bundle", {**request, "operation": "begin", "evidence": manifest})
         try:
+            batch = []
             for payload in messages[:-1]:
-                await self.enqueue(payload)
+                candidate = {**request, "operation": "stage", "messages": [*batch, payload]}
+                if batch and (len(batch) == 4 or len(canonical(candidate)) > BUNDLE_RPC_BYTES):
+                    await self._call("Bundle", {**request, "operation": "stage", "messages": batch})
+                    batch = []
+                batch.append(payload)
+                if (
+                    len(canonical({**request, "operation": "stage", "messages": batch}))
+                    > BUNDLE_RPC_BYTES
+                ):
+                    raise ValueError("individual evidence exceeds internal RPC capacity")
+            if batch:
+                await self._call("Bundle", {**request, "operation": "stage", "messages": batch})
             return await self._call("Bundle", {**request, "operation": "commit"})
         except BaseException:
             try:
@@ -95,6 +108,10 @@ async def serve_delivery(store, endpoint, *, site_id, edge_id, latest_status=Non
             duplicate = False
             if operation == "begin":
                 await store.call("begin_bundle", assessment, request["evidence"])
+            elif operation == "stage":
+                if len(canonical(request)) > BUNDLE_RPC_BYTES:
+                    raise ValueError("evidence batch exceeds internal RPC capacity")
+                await store.call("stage_bundle", assessment, request["messages"])
             elif operation == "commit":
                 duplicate = await store.call("commit_bundle", assessment)
             elif operation == "abort":
