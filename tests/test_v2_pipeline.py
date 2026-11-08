@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 import time
 from uuid import uuid4
 
@@ -14,9 +15,13 @@ from test_v2_judgment import judgment_configuration
 from test_v2_processing import configuration
 
 
-@pytest.mark.parametrize("with_judgment", [False, True])
+@pytest.mark.parametrize(
+    "with_judgment,busy_engine",
+    [(False, False), (True, False), (True, True)],
+    ids=["raw", "judgment", "busy_engine"],
+)
 async def test_three_services_configuration_ack_then_raw_and_assessment(
-    tmp_path, monkeypatch, with_judgment
+    tmp_path, monkeypatch, with_judgment, busy_engine
 ):
     config = judgment_configuration() if with_judgment else configuration()
     if with_judgment:
@@ -119,10 +124,30 @@ async def test_three_services_configuration_ack_then_raw_and_assessment(
         "observation_endpoint": free_endpoint(),
     }
     stop = asyncio.Event()
+    entered, released = threading.Event(), threading.Event()
+    if busy_engine:
+        original_ingest = runtime.ProcessingEngine.ingest
+
+        def busy_ingest(self, raw):
+            if not entered.is_set():
+                entered.set()
+                if not released.wait(1):
+                    raise RuntimeError("scan processing blocked async control work")
+            return original_ingest(self, raw)
+
+        monkeypatch.setattr(runtime.ProcessingEngine, "ingest", busy_ingest)
+
+    async def control_work():
+        if busy_engine:
+            while not entered.is_set():
+                await asyncio.sleep(0.001)
+            released.set()
+
     tasks = [
         asyncio.create_task(role(runtime_config, stop))
         for role in (runtime.uplink, runtime.processing, runtime.orchestrator)
     ]
+    tasks.append(asyncio.create_task(control_work()))
     try:
         for _ in range(80):
             await asyncio.sleep(0.1)

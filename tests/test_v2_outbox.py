@@ -112,3 +112,60 @@ def test_external_status_budget_is_reserved_and_reported(tmp_path):
         assert store.used_bytes() == spool_before + 32768
         assert store.stats()["limit_bytes"] == 98304
         assert store.used_bytes() <= 98304
+
+
+def test_ack_of_protected_scan_succeeds_without_space_for_another_body(tmp_path):
+    with Outbox(tmp_path, limit_bytes=65536, reserve_bytes=16384) as store:
+        first = message()
+        store.enqueue(first)
+        store.protect("live-judgment", [first["sensors"][0]["scan"]["scan_id"]], expires_at=10**12)
+        for _ in range(30):
+            try:
+                store.enqueue(message())
+            except CapacityError:
+                break
+        else:
+            pytest.fail("test did not fill protected storage")
+        losses = store.stats()["lost_messages"]
+        store.delivered(first["message_id"], "2026-09-20T01:00:00Z")
+        assert store.get(first["message_id"])["state"] == "acked"
+        assert store.stats()["lost_messages"] == losses
+    with Outbox(tmp_path, limit_bytes=65536, reserve_bytes=16384) as store:
+        assert store.inspect(first["message_id"])["remote_acked"] is True
+        assert store.get(first["message_id"])["state"] == "acked"
+
+
+def test_protected_acks_remain_durable_after_receipt_rotation(tmp_path):
+    bodies = [message() for _ in range(40)]
+    with Outbox(tmp_path) as store:
+        store.protect(
+            "live-judgment", [bodies[0]["sensors"][0]["scan"]["scan_id"]], expires_at=10**12
+        )
+        for body in bodies:
+            store.enqueue(body)
+            store.delivered(body["message_id"], "2026-09-20T01:00:00Z")
+        assert len(store.meta["receipts"]) == 32
+    with Outbox(tmp_path) as store:
+        assert store.next_ready() is None
+        for body in bodies:
+            assert store.inspect(body["message_id"])["remote_acked"] is True
+            assert store.get(body["message_id"])["payload"] == body
+        store.release("live-judgment")
+        assert not store.index
+
+
+def test_failed_ack_persistence_does_not_publish_a_false_receipt(tmp_path, monkeypatch):
+    body = message()
+    with Outbox(tmp_path) as store:
+        store.enqueue(body)
+
+        def no_space():
+            raise CapacityError("diagnostic write unavailable")
+
+        monkeypatch.setattr(store, "_save_meta", no_space)
+        with pytest.raises(CapacityError):
+            store.delivered(body["message_id"], "2026-09-20T01:00:00Z")
+        assert not store.inspect(body["message_id"])["remote_acked"]
+        assert store.get(body["message_id"])["state"] == "pending"
+    with Outbox(tmp_path) as store:
+        assert not store.inspect(body["message_id"])["remote_acked"]

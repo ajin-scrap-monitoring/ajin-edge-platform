@@ -6,6 +6,7 @@ import json
 import os
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -196,6 +197,18 @@ async def processing(config, stop):
     gate, broker = ConfigurationGate(), ObservationBroker()
     status = LocalStatus(config, "lidar-processing")
     server, _ = await broker.serve(config["observation_endpoint"])
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v2-scan-processing")
+
+    def ingest_frame(frame, sensor_id):
+        raw = from_frame(
+            frame,
+            edge_id=registration["edge_id"],
+            sensor_id=sensor_id,
+            revision=registration["config_revision"],
+        )
+        return engine.ingest(raw)
+
     async with grpc.aio.insecure_channel(config["delivery_endpoint"], options=OPTIONS) as channel:
         client = DeliveryStub(channel)
         sender = PendingSender(client, status)
@@ -209,13 +222,9 @@ async def processing(config, stop):
                             lidar_pb2.SubscribeRequest(consumer_id="processing-v2")
                         ):
                             try:
-                                raw = from_frame(
-                                    frame,
-                                    edge_id=registration["edge_id"],
-                                    sensor_id=sensor_id,
-                                    revision=registration["config_revision"],
+                                observation = await loop.run_in_executor(
+                                    executor, ingest_frame, frame, sensor_id
                                 )
-                                observation = engine.ingest(raw)
                                 status.advanced()
                                 if status.reason in ("DRIVER_UNAVAILABLE", "SCAN_REJECTED"):
                                     status.reason = ""
@@ -237,7 +246,11 @@ async def processing(config, stop):
             await register(client, registration, gate, status)
             while True:
                 start = time.monotonic()
-                sender.offer(engine.periodic(now_ns=time.monotonic_ns()))
+                sender.offer(
+                    await loop.run_in_executor(
+                        executor, lambda: engine.periodic(now_ns=time.monotonic_ns())
+                    )
+                )
                 status.write(
                     "DEGRADED" if status.reason else "HEALTHY",
                     dropped_scans=engine.dropped_scans,
@@ -256,6 +269,7 @@ async def processing(config, stop):
                 )
         finally:
             await server.stop(3)
+            executor.shutdown(wait=True, cancel_futures=True)
 
 
 async def uplink(config, stop):

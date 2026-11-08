@@ -11,6 +11,7 @@ import os
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from functools import partial
 from pathlib import Path
 
@@ -192,6 +193,12 @@ class Outbox:
 
     def _index(self, path, record):
         payload = record["payload"]
+        receipt = self.meta["receipts"].get(payload["message_id"])
+        if receipt is not None:
+            if receipt["digest"] != record["digest"]:
+                raise ValueError("persisted ACK conflicts with record")
+            if record["state"] == "pending":
+                record = {**record, "state": "acked"}
         self.index[payload["message_id"]] = {
             key: value for key, value in record.items() if key != "payload"
         }
@@ -206,7 +213,12 @@ class Outbox:
 
     def get(self, message_id):
         item = self.index.get(message_id)
-        return json.loads(item["path"].read_bytes()) if item else None
+        if item is None:
+            return None
+        record = json.loads(item["path"].read_bytes())
+        if record["state"] == "pending" and message_id in self.meta["receipts"]:
+            record["state"] = "acked"
+        return record
 
     def enqueue(self, payload):
         validate_message(payload)
@@ -493,15 +505,31 @@ class Outbox:
 
     def delivered(self, mid, received_at, *, now=None):
         item = self.index[mid]
-        self.meta["last_backend_ack_at"] = received_at
-        self.meta["receipts"][mid] = {"digest": item["digest"]}
-        while len(self.meta["receipts"]) > 32:
-            del self.meta["receipts"][next(iter(self.meta["receipts"]))]
-        self._save_meta()
+        previous = deepcopy(self.meta)
+        try:
+            self.meta["last_backend_ack_at"] = received_at
+            self.meta["receipts"][mid] = {"digest": item["digest"]}
+            while len(self.meta["receipts"]) > 32:
+                oldest = next(iter(self.meta["receipts"]))
+                retained = self.index.get(oldest)
+                if retained is not None:
+                    # Only a receipt leaving the bounded journal needs its ACK
+                    # embedded in the retained body before we forget that receipt.
+                    record = json.loads(retained["path"].read_bytes())
+                    if record["state"] == "pending":
+                        record["state"] = "acked"
+                        self._atomic(retained["path"], record)
+                        self._index(retained["path"], record)
+                del self.meta["receipts"][oldest]
+            self._save_meta()
+        except BaseException:
+            self.meta = previous
+            raise
+        # The fsynced receipt is authoritative across restart; do not rewrite
+        # a large protected scan for every successful HTTP acknowledgement.
+        item["state"] = "acked"
         active, referenced = self._protected(now)
-        if item["scans"] & (active | referenced):
-            self._change(mid, state="acked", now=now)
-        else:
+        if not item["scans"] & (active | referenced):
             self._delete(mid)
         self.collect(now=now)
 
