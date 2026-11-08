@@ -191,3 +191,31 @@ def test_ack_rotation_at_full_protected_capacity_remains_durable(tmp_path):
         assert all(store.inspect(b["message_id"])["remote_acked"] for b in bodies)
         store.release("live")
         assert not store.index
+
+
+def test_receipt_rotation_can_retry_a_failed_directory_sync(tmp_path, monkeypatch):
+    bodies = [message() for _ in range(33)]
+    with Outbox(tmp_path) as store:
+        store.protect("live", [bodies[0]["sensors"][0]["scan"]["scan_id"]], expires_at=10**12)
+        for body in bodies:
+            store.enqueue(body)
+        for body in bodies[:32]:
+            store.delivered(body["message_id"], "2026-09-20T01:00:00Z")
+        sync = store._sync_directory
+        calls = 0
+
+        def fail_once():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("temporary directory sync failure")
+            sync()
+
+        monkeypatch.setattr(store, "_sync_directory", fail_once)
+        with pytest.raises(OSError):
+            store.delivered(bodies[-1]["message_id"], "2026-09-20T01:00:00Z")
+        assert store.get(bodies[0]["message_id"])["state"] == "acked"
+        assert not store.inspect(bodies[-1]["message_id"])["remote_acked"]
+        store.delivered(bodies[-1]["message_id"], "2026-09-20T01:00:00Z")
+    with Outbox(tmp_path) as store:
+        assert store.next_ready() is None

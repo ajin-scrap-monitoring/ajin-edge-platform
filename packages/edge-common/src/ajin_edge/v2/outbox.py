@@ -542,8 +542,8 @@ class Outbox:
                     if not path.name.endswith(".acked.record"):
                         target = path.with_suffix(".acked.record")
                         os.replace(path, target)
-                        self._sync_directory()
                         retained.update(path=target, state="acked")
+                    self._sync_directory()
                 del self.meta["receipts"][oldest]
             self._save_meta()
         except BaseException:
