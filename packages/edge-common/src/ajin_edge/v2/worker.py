@@ -38,7 +38,14 @@ class DeliveryWorker:
         )
         rows = []
         try:
-            for _ in range(4 - int(use_status)):
+            # A burst of EVIDENCE must not hide the two 1Hz feeds. Reserve at
+            # most two slots while leaving at least one slot for durable work
+            # even when a status snapshot is also due.
+            for priority in ("periodic", "assessment"):
+                row = await self.store.call("next_ready", pin=True, priority=priority)
+                if row is not None:
+                    rows.append(row)
+            for _ in range(4 - int(use_status) - len(rows)):
                 row = await self.store.call("next_ready", pin=True)
                 if row is None:
                     break

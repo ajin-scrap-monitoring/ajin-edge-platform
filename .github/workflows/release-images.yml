@@ -48,9 +48,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13.11'
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: '0.9.28'
+      - name: Install pinned uv
+        run: python -m pip install --disable-pip-version-check uv==0.9.28
       - run: uv sync --frozen --python 3.13.11
       - run: uv run --frozen pytest -q -p no:cacheprovider
       - run: uv run --frozen ruff check packages services/lidar-processing/src services/measurement-uplink/src services/edge-orchestrator/src tests integration-tests tools conftest.py

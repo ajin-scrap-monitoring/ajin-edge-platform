@@ -527,17 +527,28 @@ class Outbox:
         self.meta["unavailable_evidence_scan_ids"] = list(dict.fromkeys(ids))[-32:]
         self._save_meta()
 
-    def next_ready(self, *, pin=False):
+    def next_ready(self, *, pin=False, priority=None):
+        if priority not in (None, "periodic", "assessment"):
+            raise ValueError("invalid delivery priority")
         items = [
             (mid, item)
             for mid, item in self.index.items()
-            if item["state"] == "pending" and mid not in self.inflight
+            if item["state"] == "pending"
+            and mid not in self.inflight
+            and (
+                priority is None
+                or priority == "periodic"
+                and item["delivery_kind"] == "PERIODIC"
+                or priority == "assessment"
+                and item["kind"] == "edge_assessment"
+            )
         ]
         if not items:
             return None
-        selector = max if self.latest else min
+        selector = min if priority is not None else max if self.latest else min
         mid, _ = selector(items, key=lambda pair: pair[1]["order"])
-        self.latest = not self.latest
+        if priority is None:
+            self.latest = not self.latest
         if pin:
             self.inflight.add(mid)
         return self.get(mid)

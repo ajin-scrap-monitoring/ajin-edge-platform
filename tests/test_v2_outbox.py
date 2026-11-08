@@ -172,21 +172,32 @@ def test_failed_ack_persistence_does_not_publish_a_false_receipt(tmp_path, monke
 
 
 def test_ack_rotation_at_full_protected_capacity_remains_durable(tmp_path):
+    # tmpfs/overlay and Windows allocate small files differently. Size the
+    # fixture from the actual filesystem so at least 33 receipts can rotate.
+    with Outbox(tmp_path / "probe") as probe:
+        sample = message()
+        probe.enqueue(sample)
+        stat = probe.index[sample["message_id"]]["path"].stat()
+        allocation = max(probe._allocation(stat.st_size), getattr(stat, "st_blocks", 0) * 512)
+    limit = allocation * 64 + 65536
+    directory = tmp_path / "full"
     bodies = []
-    with Outbox(tmp_path, limit_bytes=262144, reserve_bytes=16384) as store:
+    with Outbox(directory, limit_bytes=limit, reserve_bytes=16384) as store:
         first = message()
         store.protect("live", [first["sensors"][0]["scan"]["scan_id"]], expires_at=10**12)
-        for _ in range(100):
+        for _ in range(128):
             body = message()
             try:
                 store.enqueue(body)
                 bodies.append(body)
             except CapacityError:
                 break
+        else:
+            pytest.fail("test did not fill protected storage")
         assert len(bodies) > 32
         for body in bodies:
             store.delivered(body["message_id"], "2026-09-20T01:00:00Z")
-    with Outbox(tmp_path, limit_bytes=262144, reserve_bytes=16384) as store:
+    with Outbox(directory, limit_bytes=limit, reserve_bytes=16384) as store:
         assert store.next_ready() is None
         assert all(store.inspect(b["message_id"])["remote_acked"] for b in bodies)
         store.release("live")
