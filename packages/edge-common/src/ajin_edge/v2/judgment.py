@@ -10,6 +10,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from .judgment_schema import JUDGMENT_SCHEMA
+from .processing import copy_observation
 from .section_profile import build_profile, geometry_matches
 
 
@@ -127,6 +128,7 @@ class SectionJudgment:
         if not is_independent(self.model):
             return
         scan = observation["scan"]
+        owned = copy_observation(observation)
         with self.lock:
             history = self.history[observation["sensor_id"]]
             if history:
@@ -137,7 +139,7 @@ class SectionJudgment:
                     > self.model["window"]["max_age_ms"] * 1000000
                 ):
                     history.clear()
-            history.append(deepcopy(observation))
+            history.append(owned)
 
     def calculate(self, now_ns):
         if not self.model:
