@@ -16,6 +16,9 @@ jobs:
         with:
           platforms: arm64
       - uses: docker/setup-buildx-action@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.11"
       - uses: astral-sh/setup-uv@v4
         with:
           version: "0.9.28"

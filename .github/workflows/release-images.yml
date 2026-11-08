@@ -45,6 +45,9 @@ jobs:
             echo 'A published release must not be rebuilt. Choose a new version.' >&2
             exit 1
           fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.11'
       - uses: astral-sh/setup-uv@v4
         with:
           version: '0.9.28'
