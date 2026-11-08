@@ -1,13 +1,13 @@
-"""Observation health and explicitly enabled judgment interfaces.
+"""Observation health and independent, explicitly configured section judgments."""
 
-No fill or occlusion algorithm is enabled by this module.
-"""
-
+import time
 from copy import deepcopy
+from datetime import datetime
 from uuid import uuid4
 
 from .contracts import validate_message
-from .processing import canonical, envelope, validate_configuration
+from .judgment import SectionJudgment, mapped_fill
+from .processing import canonical, envelope, utc_now, validate_configuration
 
 
 class ConfigurationGate:
@@ -73,6 +73,7 @@ class Orchestrator:
         self.enabled_rules = frozenset(enabled_rules)
         self.events = {}
         self.observations = 0
+        self.judgment = SectionJudgment(self.config)
 
     def ingest(self, observation, *, now_ns):
         sensor = self.sensors[observation["sensor_id"]]
@@ -89,6 +90,7 @@ class Orchestrator:
         sensor.update(scan_id=scan["scan_id"], at=scan["acquired_at"], ns=acquired)
         self._state(sensor, now_ns)
         self.observations += 1
+        self.judgment.ingest(observation)
         return True
 
     @staticmethod
@@ -125,8 +127,14 @@ class Orchestrator:
             )
         return result
 
-    def assessment(self):
+    def _empty_assessment(self):
         # Without a rule there are no "used" scans; input is not evidence of a calculation.
+        model = self.config.get("judgment")
+        enabled = bool(
+            model
+            and model["verification_state"] == "VERIFIED"
+            and model["fill_calibration"] is not None
+        )
         return {
             **envelope(self.config, "edge_assessment"),
             "assessment_type": "STATE",
@@ -136,15 +144,69 @@ class Orchestrator:
             "observed_to": None,
             "rule_version": None,
             "decision_state": "UNAVAILABLE",
-            "reason_codes": ["FILL_METHOD_NOT_IMPLEMENTED"],
+            "reason_codes": ["FILL_METHOD_NOT_CONFIGURED"],
             "fill_state": "UNAVAILABLE",
             "fill_estimate": None,
             "event": None,
             "capabilities": {
-                k: "NOT_IMPLEMENTED" for k in ("fill", "occlusion", "collection", "vision")
+                "fill": "ENABLED" if enabled else "NOT_VALIDATED",
+                **{k: "NOT_IMPLEMENTED" for k in ("occlusion", "collection", "vision")},
             },
             "evidence": {"scans": [], "vision_observations": []},
         }
+
+    def _evaluate(self, *, now_ns=None, generated_at=None):
+        fixed_clock = now_ns is not None
+        now_ns = time.monotonic_ns() if now_ns is None else now_ns
+        body = self._empty_assessment()
+        model = self.config.get("judgment")
+        enabled = bool(
+            model
+            and model["verification_state"] == "VERIFIED"
+            and model["fill_calibration"] is not None
+        )
+        body["capabilities"]["fill"] = "ENABLED" if enabled else "NOT_VALIDATED"
+        profile, reasons, used = self.judgment.calculate(now_ns)
+        if (
+            used
+            and not fixed_clock
+            and any(
+                not 0
+                <= time.monotonic_ns() - int(o["scan"]["acquired_monotonic_ns"])
+                <= model["window"]["max_age_ms"] * 1000000
+                for o in used
+            )
+        ):
+            profile, reasons, used = None, ["INPUT_EXPIRED_DURING_JUDGMENT"], []
+        body["generated_at"] = generated_at or utc_now()
+        body["reason_codes"] = reasons
+        if model:
+            body["section_profile"] = profile
+            body["rule_version"] = model["method_version"]
+        if used:
+            stamps = [o["scan"]["acquired_at"] for o in used]
+            body.update(
+                observed_from=min(stamps, key=datetime.fromisoformat),
+                observed_to=max(stamps, key=datetime.fromisoformat),
+            )
+            body["evidence"]["scans"] = [self.reference(o) for o in used]
+        if profile and profile["area_ratio"] is not None:
+            body["decision_state"] = "LIMITED" if reasons else "AVAILABLE"
+            if enabled:
+                body["fill_state"] = "AVAILABLE"
+                body["fill_estimate"] = {
+                    "ratio": mapped_fill(profile["area_ratio"], model["fill_calibration"]),
+                    "method_version": model["method_version"],
+                }
+        validate_message(body)
+        return body, used
+
+    def assessment(self, *, now_ns=None, generated_at=None):
+        return self._evaluate(now_ns=now_ns, generated_at=generated_at)[0]
+
+    def assessment_bundle(self, *, now_ns=None, generated_at=None):
+        body, used = self._evaluate(now_ns=now_ns, generated_at=generated_at)
+        return [self.evidence(o, [body["assessment_id"]]) for o in used] + [body]
 
     def event(self, kind, stage, used_observations, *, rule_version, assessment_id=None):
         if rule_version is None or rule_version not in self.enabled_rules:
@@ -165,7 +227,7 @@ class Orchestrator:
             if previous["kind"] != kind or stage not in allowed.get(previous["stage"], set()):
                 raise ValueError("invalid event transition")
             revision = previous["revision"] + 1
-        payload = self.assessment()
+        payload = self._empty_assessment()
         stamps = [o["scan"]["acquired_at"] for o in used_observations]
         from datetime import datetime
 

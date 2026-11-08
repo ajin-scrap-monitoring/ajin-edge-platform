@@ -1,6 +1,7 @@
 """Private UDS gRPC methods carrying canonical UTF-8 JSON (not protobuf messages)."""
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -33,6 +34,27 @@ class DeliveryStub:
     async def enqueue(self, payload):
         return await self._call("Enqueue", payload)
 
+    async def enqueue_bundle(self, messages):
+        if not isinstance(messages, list) or not 2 <= len(messages) <= 17:
+            raise ValueError("invalid evidence bundle size")
+        assessment = messages[-1]
+        manifest = [
+            {"message_id": p["message_id"], "digest": hashlib.sha256(canonical(p)).hexdigest()}
+            for p in messages[:-1]
+        ]
+        request = {"assessment": assessment}
+        await self._call("Bundle", {**request, "operation": "begin", "evidence": manifest})
+        try:
+            for payload in messages[:-1]:
+                await self.enqueue(payload)
+            return await self._call("Bundle", {**request, "operation": "commit"})
+        except BaseException:
+            try:
+                await self._call("Bundle", {**request, "operation": "abort"})
+            except grpc.aio.AioRpcError:
+                pass  # The bounded persisted lease still expires after process/connection loss.
+            raise
+
     async def inspect(self, message_id):
         return await self._call("Inspect", {"message_id": message_id})
 
@@ -64,6 +86,33 @@ async def serve_delivery(store, endpoint, *, site_id, edge_id, latest_status=Non
         mid = request.get("message_id")
         return await store.call("inspect", mid)
 
+    async def bundle(request, context):
+        try:
+            assessment = request["assessment"]
+            if assessment.get("site_id") != site_id or assessment.get("edge_id") != edge_id:
+                await context.abort(grpc.StatusCode.PERMISSION_DENIED, "device identity mismatch")
+            operation = request["operation"]
+            duplicate = False
+            if operation == "begin":
+                await store.call("begin_bundle", assessment, request["evidence"])
+            elif operation == "commit":
+                duplicate = await store.call("commit_bundle", assessment)
+            elif operation == "abort":
+                await store.call("release", assessment["message_id"])
+            else:
+                raise ValueError("invalid bundle operation")
+            return {
+                "state": "pending",
+                "message_id": assessment["message_id"],
+                "duplicate": duplicate,
+            }
+        except ConflictError:
+            await context.abort(grpc.StatusCode.ALREADY_EXISTS, "message ID conflict")
+        except CapacityError:
+            await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "storage unavailable")
+        except (ValueError, TypeError, KeyError, AttributeError):
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "invalid judgment bundle")
+
     async def stats(request, context):
         return await store.call("stats")
 
@@ -71,7 +120,12 @@ async def serve_delivery(store, endpoint, *, site_id, edge_id, latest_status=Non
         name: grpc.unary_unary_rpc_method_handler(
             callback, request_deserializer=json.loads, response_serializer=canonical
         )
-        for name, callback in (("Enqueue", enqueue), ("Inspect", inspect), ("Stats", stats))
+        for name, callback in (
+            ("Enqueue", enqueue),
+            ("Bundle", bundle),
+            ("Inspect", inspect),
+            ("Stats", stats),
+        )
     }
     return await _server(endpoint, SERVICE, handlers)
 

@@ -52,6 +52,10 @@ def validate_configuration(config):
     for key in ("site_id", "edge_id", "config_revision"):
         identifier(config[key])
     identifier(config["coordinate_frame"]["frame_id"])
+    if "judgment" in config:
+        from .judgment import validate_judgment
+
+        validate_judgment(config["judgment"])
     sensors = config["sensors"]
     if len(sensors) != 2 or len({s["sensor_id"] for s in sensors}) != 2:
         raise ValueError("exactly two distinct sensors required")

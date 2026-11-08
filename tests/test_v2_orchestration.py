@@ -12,7 +12,7 @@ def test_no_invented_fill_or_event():
     validate_message(state)
     assert state["fill_estimate"] is None
     assert state["fill_state"] == "UNAVAILABLE"
-    assert state["capabilities"]["fill"] == "NOT_IMPLEMENTED"
+    assert state["capabilities"]["fill"] == "NOT_VALIDATED"
     assert state["evidence"]["scans"] == []
     assert state["observed_from"] is None
     with pytest.raises(ValueError):

@@ -5,15 +5,24 @@ from uuid import uuid4
 
 import grpc
 import httpx
+import pytest
 from ajin_edge.v2 import runtime
 from ajin_edge.v2.contracts import validate_message
 from ajin_edge.v2.processing import envelope, utc_now
 from ajin_edge.wire import lidar_pb2, lidar_pb2_grpc
+from test_v2_judgment import judgment_configuration
 from test_v2_processing import configuration
 
 
-async def test_three_services_configuration_ack_then_raw_and_assessment(tmp_path, monkeypatch):
-    config = configuration()
+@pytest.mark.parametrize("with_judgment", [False, True])
+async def test_three_services_configuration_ack_then_raw_and_assessment(
+    tmp_path, monkeypatch, with_judgment
+):
+    config = judgment_configuration() if with_judgment else configuration()
+    if with_judgment:
+        config["judgment"]["section"].update(
+            floor_z_mm=[0], ceiling_z_mm=[2000], active_bins=[True]
+        )
     config["coordinate_frame"].update(
         unit="mm",
         origin_description="Test origin",
@@ -75,6 +84,7 @@ async def test_three_services_configuration_ack_then_raw_and_assessment(tmp_path
                     clock_domain_id="boot-test",
                 )
                 frame.samples.add(angle_mdeg=90000, distance_mm=1000, quality=0)
+                frame.samples.add(angle_mdeg=90000, distance_mm=1000, quality=100)
                 yield frame
                 await asyncio.sleep(0.1)
 
@@ -125,10 +135,15 @@ async def test_three_services_configuration_ack_then_raw_and_assessment(tmp_path
                 for s in body["sensors"]
                 if s["scan"]
             ]
+            available = [b for b in received if b.get("fill_estimate") is not None]
+            evidence_ready = available and {
+                s["scan_id"] for s in available[0]["evidence"]["scans"]
+            } <= {s["scan_id"] for s in scans}
             if (
                 kinds
                 == {"edge_configuration", "lidar_measurement", "edge_assessment", "edge_status"}
                 and scans
+                and (not with_judgment or evidence_ready)
             ):
                 break
             for task in tasks:
@@ -142,11 +157,31 @@ async def test_three_services_configuration_ack_then_raw_and_assessment(tmp_path
             "edge_status",
         }
         assert scans[0]["points"][0]["quality"] == 0
-        assert all(
-            body["fill_estimate"] is None
-            for body in received
-            if body["message_type"] == "edge_assessment"
-        )
+        if with_judgment:
+            measured_ids = {
+                s["scan"]["scan_id"]
+                for b in received
+                if b["message_type"] == "lidar_measurement"
+                for s in b["sensors"]
+                if s["scan"]
+            }
+            available = [b for b in received if b.get("fill_estimate") is not None]
+            assert available and available[0]["fill_estimate"]["ratio"] == pytest.approx(0.5)
+            assert {s["scan_id"] for s in available[0]["evidence"]["scans"]} <= measured_ids
+            periodic = [b for b in received if b.get("delivery_kind") == "PERIODIC"]
+            assert periodic
+            assert all(
+                s["scan"]["points"][0]["quality"] == 0
+                for b in periodic
+                for s in b["sensors"]
+                if s["scan"]
+            )
+        else:
+            assert all(
+                b["fill_estimate"] is None
+                for b in received
+                if b["message_type"] == "edge_assessment"
+            )
 
         # A slow local status RPC must not delay independent one-second judgments.
         async def slow_stats(self):
