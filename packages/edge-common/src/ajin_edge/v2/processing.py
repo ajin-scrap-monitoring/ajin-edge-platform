@@ -55,7 +55,7 @@ def validate_configuration(config):
     if "judgment" in config:
         from .judgment import validate_judgment
 
-        validate_judgment(config["judgment"])
+        validate_judgment(config["judgment"], {s["sensor_id"] for s in config["sensors"]})
     sensors = config["sensors"]
     if len(sensors) != 2 or len({s["sensor_id"] for s in sensors}) != 2:
         raise ValueError("exactly two distinct sensors required")

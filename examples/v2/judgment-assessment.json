@@ -1,23 +1,23 @@
 {
   "schema_version": "2.0",
   "message_type": "edge_assessment",
-  "message_id": "cd2f9928-d44e-46e1-a713-8403195b8665",
+  "message_id": "997bdb6e-7b1c-4418-8383-ea9bfcb621fb",
   "site_id": "site-test",
   "edge_id": "edge-test",
   "config_revision": "cfg-2",
-  "generated_at": "2026-09-20T00:00:01Z",
+  "generated_at": "2026-11-08T00:00:01Z",
   "assessment_type": "STATE",
-  "assessment_id": "b0f769e6-85ac-47a7-a7c2-3c06cafe97a4",
+  "assessment_id": "96cef57d-1120-49ee-a924-2cfdefee1aab",
   "revision": 1,
   "observed_from": "2026-09-20T00:00:00.800000+00:00",
   "observed_to": "2026-09-20T00:00:01+00:00",
-  "rule_version": "synthetic-section-v1",
+  "rule_version": "synthetic-sections-v2",
   "decision_state": "AVAILABLE",
   "reason_codes": [],
   "fill_state": "AVAILABLE",
   "fill_estimate": {
-    "ratio": 0.5000755119746526,
-    "method_version": "synthetic-section-v1"
+    "ratio": 0.6499859732935279,
+    "method_version": "synthetic-fusion-v1"
   },
   "event": null,
   "capabilities": {
@@ -73,93 +73,175 @@
     ],
     "vision_observations": []
   },
-  "section_profile": {
-    "coordinate_frame_id": "frame-test",
-    "origin_xy_mm": [
-      0,
-      0
-    ],
-    "axis_xy": [
-      1,
-      0
-    ],
-    "bin_width_mm": 50,
-    "bins": [
-      {
-        "index": 0,
-        "floor_z_mm": 0,
-        "ceiling_z_mm": 1000,
-        "height_mm": 500.3750987111145,
-        "source": "OBSERVED",
-        "sensor_ids": [
-          "lidar-a",
-          "lidar-b"
-        ]
-      },
-      {
-        "index": 1,
-        "floor_z_mm": 0,
-        "ceiling_z_mm": 1000,
-        "height_mm": 500.401487484757,
-        "source": "OBSERVED",
-        "sensor_ids": [
-          "lidar-a",
-          "lidar-b"
-        ]
-      },
-      {
-        "index": 2,
-        "floor_z_mm": 0,
-        "ceiling_z_mm": 1000,
-        "height_mm": 499.62391833486623,
-        "source": "OBSERVED",
-        "sensor_ids": [
-          "lidar-a",
-          "lidar-b"
-        ]
-      },
-      {
-        "index": 3,
-        "floor_z_mm": 0,
-        "ceiling_z_mm": 1000,
-        "height_mm": 500.2450701114576,
-        "source": "OBSERVED",
-        "sensor_ids": [
-          "lidar-a",
-          "lidar-b"
-        ]
-      },
-      {
-        "index": 4,
-        "floor_z_mm": 0,
-        "ceiling_z_mm": 1000,
-        "height_mm": 499.73198523106805,
-        "source": "OBSERVED",
-        "sensor_ids": [
-          "lidar-a",
-          "lidar-b"
+  "section_profiles": [
+    {
+      "sensor_id": "lidar-a",
+      "state": "AVAILABLE",
+      "reason_codes": [],
+      "profile": {
+        "coordinate_frame_id": "frame-test",
+        "origin_xy_mm": [
+          1000,
+          0
+        ],
+        "axis_xy": [
+          1,
+          0
+        ],
+        "plane_origin_mm": [
+          500,
+          2500,
+          10000
+        ],
+        "plane_normal": [
+          0.0,
+          0.9745551866148997,
+          -0.22414769292142694
+        ],
+        "area_basis": "VERTICAL_PROJECTION",
+        "bin_width_mm": 1000,
+        "bins": [
+          {
+            "index": 0,
+            "floor_z_mm": 0,
+            "ceiling_z_mm": 10000,
+            "height_mm": 1999.58126714613,
+            "source": "OBSERVED",
+            "sensor_ids": [
+              "lidar-a"
+            ]
+          },
+          {
+            "index": 1,
+            "floor_z_mm": 0,
+            "ceiling_z_mm": 10000,
+            "height_mm": 2000.0100578679103,
+            "source": "OBSERVED",
+            "sensor_ids": [
+              "lidar-a"
+            ]
+          },
+          {
+            "index": 2,
+            "floor_z_mm": 0,
+            "ceiling_z_mm": 10000,
+            "height_mm": 1999.8827653311155,
+            "source": "OBSERVED",
+            "sensor_ids": [
+              "lidar-a"
+            ]
+          }
+        ],
+        "area_mm2": 5999474.090345155,
+        "capacity_area_mm2": 30000000,
+        "area_ratio": 0.19998246967817185,
+        "coverage_ratio": 1.0,
+        "sensor_stats": [
+          {
+            "sensor_id": "lidar-a",
+            "scan_count": 3,
+            "input_points": 9,
+            "retained_points": 9,
+            "spatial_rejected_bins": 0
+          }
         ]
       }
-    ],
-    "area_mm2": 125018.87799366316,
-    "capacity_area_mm2": 250000,
-    "area_ratio": 0.5000755119746526,
-    "coverage_ratio": 1.0,
-    "sensor_stats": [
+    },
+    {
+      "sensor_id": "lidar-b",
+      "state": "AVAILABLE",
+      "reason_codes": [],
+      "profile": {
+        "coordinate_frame_id": "frame-test",
+        "origin_xy_mm": [
+          0,
+          1000
+        ],
+        "axis_xy": [
+          0,
+          1
+        ],
+        "plane_origin_mm": [
+          2300,
+          3900,
+          10000
+        ],
+        "plane_normal": [
+          -0.9889363528682975,
+          -0.0,
+          -0.14834045293024462
+        ],
+        "area_basis": "VERTICAL_PROJECTION",
+        "bin_width_mm": 1000,
+        "bins": [
+          {
+            "index": 0,
+            "floor_z_mm": 0,
+            "ceiling_z_mm": 10000,
+            "height_mm": 8000.315495624695,
+            "source": "OBSERVED",
+            "sensor_ids": [
+              "lidar-b"
+            ]
+          },
+          {
+            "index": 1,
+            "floor_z_mm": 0,
+            "ceiling_z_mm": 10000,
+            "height_mm": 7999.732414850861,
+            "source": "OBSERVED",
+            "sensor_ids": [
+              "lidar-b"
+            ]
+          },
+          {
+            "index": 2,
+            "floor_z_mm": 0,
+            "ceiling_z_mm": 10000,
+            "height_mm": 7999.566324483844,
+            "source": "OBSERVED",
+            "sensor_ids": [
+              "lidar-b"
+            ]
+          }
+        ],
+        "area_mm2": 23999614.2349594,
+        "capacity_area_mm2": 30000000,
+        "area_ratio": 0.7999871411653133,
+        "coverage_ratio": 1.0,
+        "sensor_stats": [
+          {
+            "sensor_id": "lidar-b",
+            "scan_count": 3,
+            "input_points": 9,
+            "retained_points": 9,
+            "spatial_rejected_bins": 0
+          }
+        ]
+      }
+    }
+  ],
+  "fusion_result": {
+    "method": "CALIBRATED_WEIGHTED_SECTIONS",
+    "model_version": "synthetic-fusion-v1",
+    "ratio": 0.6499859732935279,
+    "components": [
       {
         "sensor_id": "lidar-a",
-        "scan_count": 3,
-        "input_points": 15,
-        "retained_points": 15,
-        "spatial_rejected_bins": 0
+        "weight": 0.25,
+        "section_ratio": 0.19998246967817185,
+        "anchor_scan_id": "lidar-a-3",
+        "calibrated_ratio": 0.19998246967817185
       },
       {
         "sensor_id": "lidar-b",
-        "scan_count": 3,
-        "input_points": 15,
-        "retained_points": 15,
-        "spatial_rejected_bins": 0
+        "weight": 0.75,
+        "section_ratio": 0.7999871411653133,
+        "anchor_scan_id": "lidar-b-3",
+        "calibrated_ratio": 0.7999871411653133
       }
-    ]
+    ],
+    "pair_delta_ms": 0.0,
+    "clock_domain_id": "boot-test"
   }
 }

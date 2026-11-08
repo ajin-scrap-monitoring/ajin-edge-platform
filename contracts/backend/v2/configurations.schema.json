@@ -195,212 +195,483 @@
       "maxItems": 2
     },
     "judgment": {
-      "type": "object",
-      "properties": {
-        "method_version": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128
-        },
-        "verification_state": {
-          "enum": [
-            "VERIFIED",
-            "UNVERIFIED"
-          ]
-        },
-        "section": {
+      "oneOf": [
+        {
           "type": "object",
           "properties": {
-            "origin_xy_mm": {
+            "model_type": {
+              "enum": [
+                "INDEPENDENT_SECTIONS_V1"
+              ]
+            },
+            "method_version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "verification_state": {
+              "enum": [
+                "VERIFIED",
+                "UNVERIFIED"
+              ]
+            },
+            "sections": {
               "type": "array",
               "items": {
-                "type": "number",
-                "minimum": -1000000000.0,
-                "maximum": 1000000000.0
+                "type": "object",
+                "properties": {
+                  "sensor_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "origin_xy_mm": {
+                    "type": "array",
+                    "items": {
+                      "type": "number",
+                      "minimum": -1000000000.0,
+                      "maximum": 1000000000.0
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "axis_xy": {
+                    "type": "array",
+                    "items": {
+                      "type": "number",
+                      "minimum": -1,
+                      "maximum": 1
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "bin_width_mm": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000000
+                  },
+                  "floor_z_mm": {
+                    "type": "array",
+                    "items": {
+                      "type": "number",
+                      "minimum": -1000000000.0,
+                      "maximum": 1000000000.0
+                    },
+                    "minItems": 1,
+                    "maxItems": 512
+                  },
+                  "ceiling_z_mm": {
+                    "type": "array",
+                    "items": {
+                      "type": "number",
+                      "minimum": -1000000000.0,
+                      "maximum": 1000000000.0
+                    },
+                    "minItems": 1,
+                    "maxItems": 512
+                  },
+                  "active_bins": {
+                    "type": "array",
+                    "items": {
+                      "type": "boolean"
+                    },
+                    "minItems": 1,
+                    "maxItems": 512
+                  },
+                  "filters": {
+                    "type": "object",
+                    "properties": {
+                      "quality_min": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 255
+                      },
+                      "distance_min_mm": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1073741823
+                      },
+                      "distance_max_mm": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1073741823
+                      },
+                      "height_margin_mm": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000000
+                      },
+                      "spatial_radius_bins": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 5
+                      },
+                      "spatial_max_deviation_mm": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1000000000.0
+                      }
+                    },
+                    "required": [
+                      "quality_min",
+                      "distance_min_mm",
+                      "distance_max_mm",
+                      "height_margin_mm",
+                      "spatial_radius_bins",
+                      "spatial_max_deviation_mm"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "max_interpolation_gap_bins": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10
+                  }
+                },
+                "required": [
+                  "sensor_id",
+                  "origin_xy_mm",
+                  "axis_xy",
+                  "bin_width_mm",
+                  "floor_z_mm",
+                  "ceiling_z_mm",
+                  "active_bins",
+                  "filters",
+                  "max_interpolation_gap_bins"
+                ],
+                "additionalProperties": false
               },
               "minItems": 2,
               "maxItems": 2
             },
-            "axis_xy": {
-              "type": "array",
-              "items": {
-                "type": "number",
-                "minimum": -1,
-                "maximum": 1
+            "window": {
+              "type": "object",
+              "properties": {
+                "scan_count": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8
+                },
+                "min_scans": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8
+                },
+                "max_age_ms": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000
+                },
+                "pair_tolerance_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                }
               },
-              "minItems": 2,
-              "maxItems": 2
+              "required": [
+                "scan_count",
+                "min_scans",
+                "max_age_ms",
+                "pair_tolerance_ms"
+              ],
+              "additionalProperties": false
             },
-            "plane_tolerance_mm": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 1000000.0
-            },
-            "bin_width_mm": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 1000000
-            },
-            "floor_z_mm": {
-              "type": "array",
-              "items": {
-                "type": "number",
-                "minimum": -1000000000.0,
-                "maximum": 1000000000.0
-              },
-              "minItems": 1,
-              "maxItems": 512
-            },
-            "ceiling_z_mm": {
-              "type": "array",
-              "items": {
-                "type": "number",
-                "minimum": -1000000000.0,
-                "maximum": 1000000000.0
-              },
-              "minItems": 1,
-              "maxItems": 512
-            },
-            "active_bins": {
-              "type": "array",
-              "items": {
-                "type": "boolean"
-              },
-              "minItems": 1,
-              "maxItems": 512
+            "fusion": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "method": {
+                      "enum": [
+                        "CALIBRATED_WEIGHTED_SECTIONS"
+                      ]
+                    },
+                    "version": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "verification_state": {
+                      "enum": [
+                        "VERIFIED",
+                        "UNVERIFIED"
+                      ]
+                    },
+                    "components": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "sensor_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "weight": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                          },
+                          "calibration": {
+                            "type": "array",
+                            "items": {
+                              "type": "array",
+                              "items": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "minItems": 2,
+                              "maxItems": 2
+                            },
+                            "minItems": 2,
+                            "maxItems": 128
+                          }
+                        },
+                        "required": [
+                          "sensor_id",
+                          "weight",
+                          "calibration"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "method",
+                    "version",
+                    "verification_state",
+                    "components"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
-            "origin_xy_mm",
-            "axis_xy",
-            "plane_tolerance_mm",
-            "bin_width_mm",
-            "floor_z_mm",
-            "ceiling_z_mm",
-            "active_bins"
+            "model_type",
+            "method_version",
+            "verification_state",
+            "sections",
+            "window",
+            "fusion"
           ],
           "additionalProperties": false
         },
-        "filters": {
+        {
           "type": "object",
           "properties": {
-            "quality_min": {
+            "method_version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "verification_state": {
+              "enum": [
+                "VERIFIED",
+                "UNVERIFIED"
+              ]
+            },
+            "section": {
+              "type": "object",
+              "properties": {
+                "origin_xy_mm": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "minimum": -1000000000.0,
+                    "maximum": 1000000000.0
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "axis_xy": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "minimum": -1,
+                    "maximum": 1
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "plane_tolerance_mm": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1000000.0
+                },
+                "bin_width_mm": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000
+                },
+                "floor_z_mm": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "minimum": -1000000000.0,
+                    "maximum": 1000000000.0
+                  },
+                  "minItems": 1,
+                  "maxItems": 512
+                },
+                "ceiling_z_mm": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "minimum": -1000000000.0,
+                    "maximum": 1000000000.0
+                  },
+                  "minItems": 1,
+                  "maxItems": 512
+                },
+                "active_bins": {
+                  "type": "array",
+                  "items": {
+                    "type": "boolean"
+                  },
+                  "minItems": 1,
+                  "maxItems": 512
+                }
+              },
+              "required": [
+                "origin_xy_mm",
+                "axis_xy",
+                "plane_tolerance_mm",
+                "bin_width_mm",
+                "floor_z_mm",
+                "ceiling_z_mm",
+                "active_bins"
+              ],
+              "additionalProperties": false
+            },
+            "filters": {
+              "type": "object",
+              "properties": {
+                "quality_min": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                },
+                "distance_min_mm": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1073741823
+                },
+                "distance_max_mm": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1073741823
+                },
+                "height_margin_mm": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000
+                },
+                "spatial_radius_bins": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 5
+                },
+                "spatial_max_deviation_mm": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1000000000.0
+                }
+              },
+              "required": [
+                "quality_min",
+                "distance_min_mm",
+                "distance_max_mm",
+                "height_margin_mm",
+                "spatial_radius_bins",
+                "spatial_max_deviation_mm"
+              ],
+              "additionalProperties": false
+            },
+            "window": {
+              "type": "object",
+              "properties": {
+                "scan_count": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8
+                },
+                "min_scans": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8
+                },
+                "max_age_ms": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000
+                },
+                "pair_tolerance_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                }
+              },
+              "required": [
+                "scan_count",
+                "min_scans",
+                "max_age_ms",
+                "pair_tolerance_ms"
+              ],
+              "additionalProperties": false
+            },
+            "max_interpolation_gap_bins": {
               "type": "integer",
               "minimum": 0,
-              "maximum": 255
+              "maximum": 10
             },
-            "distance_min_mm": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 1073741823
-            },
-            "distance_max_mm": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 1073741823
-            },
-            "height_margin_mm": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 1000000
-            },
-            "spatial_radius_bins": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 5
-            },
-            "spatial_max_deviation_mm": {
+            "max_sensor_disagreement_mm": {
               "type": "number",
               "minimum": 0,
               "maximum": 1000000000.0
-            }
-          },
-          "required": [
-            "quality_min",
-            "distance_min_mm",
-            "distance_max_mm",
-            "height_margin_mm",
-            "spatial_radius_bins",
-            "spatial_max_deviation_mm"
-          ],
-          "additionalProperties": false
-        },
-        "window": {
-          "type": "object",
-          "properties": {
-            "scan_count": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 8
             },
-            "min_scans": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 8
-            },
-            "max_age_ms": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 1000
-            },
-            "pair_tolerance_ms": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 100
-            }
-          },
-          "required": [
-            "scan_count",
-            "min_scans",
-            "max_age_ms",
-            "pair_tolerance_ms"
-          ],
-          "additionalProperties": false
-        },
-        "max_interpolation_gap_bins": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 10
-        },
-        "max_sensor_disagreement_mm": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 1000000000.0
-        },
-        "fill_calibration": {
-          "anyOf": [
-            {
-              "type": "array",
-              "items": {
-                "type": "array",
-                "items": {
-                  "type": "number",
-                  "minimum": 0,
-                  "maximum": 1
+            "fill_calibration": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "minItems": 2,
+                  "maxItems": 128
                 },
-                "minItems": 2,
-                "maxItems": 2
-              },
-              "minItems": 2,
-              "maxItems": 128
-            },
-            {
-              "type": "null"
+                {
+                  "type": "null"
+                }
+              ]
             }
-          ]
+          },
+          "required": [
+            "method_version",
+            "verification_state",
+            "section",
+            "filters",
+            "window",
+            "max_interpolation_gap_bins",
+            "max_sensor_disagreement_mm",
+            "fill_calibration"
+          ],
+          "additionalProperties": false
         }
-      },
-      "required": [
-        "method_version",
-        "verification_state",
-        "section",
-        "filters",
-        "window",
-        "max_interpolation_gap_bins",
-        "max_sensor_disagreement_mm",
-        "fill_calibration"
-      ],
-      "additionalProperties": false
+      ]
     }
   },
   "required": [

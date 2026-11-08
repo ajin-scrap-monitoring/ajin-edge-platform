@@ -1,5 +1,7 @@
 """Bounded, optional wire extensions for reproducible section judgments."""
 
+from copy import deepcopy
+
 
 def obj(fields):
     return {
@@ -99,6 +101,96 @@ SECTION_PROFILE_SCHEMA = obj(
                     "input_points": uint(),
                     "retained_points": uint(),
                     "spatial_rejected_bins": uint(),
+                }
+            ),
+            2,
+            2,
+        ),
+    }
+)
+
+# Keep archived configuration/assessment parsing compatible, but never run the legacy model.
+LEGACY_JUDGMENT_SCHEMA = JUDGMENT_SCHEMA
+SECTION_SETTINGS_SCHEMA = obj(
+    {
+        "sensor_id": ID,
+        **{
+            k: v
+            for k, v in LEGACY_JUDGMENT_SCHEMA["properties"]["section"]["properties"].items()
+            if k != "plane_tolerance_mm"
+        },
+        "filters": LEGACY_JUDGMENT_SCHEMA["properties"]["filters"],
+        "max_interpolation_gap_bins": uint(0, 10),
+    }
+)
+FUSION_SETTINGS_SCHEMA = obj(
+    {
+        "method": {"enum": ["CALIBRATED_WEIGHTED_SECTIONS"]},
+        "version": ID,
+        "verification_state": {"enum": ["VERIFIED", "UNVERIFIED"]},
+        "components": arr(
+            obj(
+                {
+                    "sensor_id": ID,
+                    "weight": num(0, 1),
+                    "calibration": arr(arr(num(0, 1), 2, 2), 2, 128),
+                }
+            ),
+            2,
+            2,
+        ),
+    }
+)
+INDEPENDENT_JUDGMENT_SCHEMA = obj(
+    {
+        "model_type": {"enum": ["INDEPENDENT_SECTIONS_V1"]},
+        "method_version": ID,
+        "verification_state": {"enum": ["VERIFIED", "UNVERIFIED"]},
+        "sections": arr(SECTION_SETTINGS_SCHEMA, 2, 2),
+        "window": LEGACY_JUDGMENT_SCHEMA["properties"]["window"],
+        "fusion": optional(FUSION_SETTINGS_SCHEMA),
+    }
+)
+JUDGMENT_SCHEMA = {"oneOf": [INDEPENDENT_JUDGMENT_SCHEMA, LEGACY_JUDGMENT_SCHEMA]}
+
+SENSOR_PROFILE_SCHEMA = deepcopy(SECTION_PROFILE_SCHEMA)
+SENSOR_PROFILE_SCHEMA["properties"].update(
+    {
+        "plane_origin_mm": arr(num(-1e15, 1e15), 3, 3),
+        "plane_normal": arr(num(-1, 1), 3, 3),
+        "area_basis": {"enum": ["VERTICAL_PROJECTION"]},
+    }
+)
+SENSOR_PROFILE_SCHEMA["required"] += ["plane_origin_mm", "plane_normal", "area_basis"]
+SENSOR_PROFILE_SCHEMA["properties"]["sensor_stats"]["minItems"] = 1
+SENSOR_PROFILE_SCHEMA["properties"]["sensor_stats"]["maxItems"] = 1
+SENSOR_PROFILE_SCHEMA["properties"]["bins"]["items"]["properties"]["source"]["enum"].remove(
+    "CONFLICT"
+)
+SENSOR_PROFILE_SCHEMA["properties"]["bins"]["items"]["properties"]["sensor_ids"]["maxItems"] = 1
+SECTION_RESULT_SCHEMA = obj(
+    {
+        "sensor_id": ID,
+        "state": {"enum": ["AVAILABLE", "LIMITED", "UNAVAILABLE"]},
+        "reason_codes": {"type": "array", "items": ID, "uniqueItems": True},
+        "profile": optional(SENSOR_PROFILE_SCHEMA),
+    }
+)
+FUSION_RESULT_SCHEMA = obj(
+    {
+        "method": {"enum": ["CALIBRATED_WEIGHTED_SECTIONS"]},
+        "model_version": ID,
+        "ratio": num(0, 1),
+        "pair_delta_ms": num(0, 100),
+        "clock_domain_id": ID,
+        "components": arr(
+            obj(
+                {
+                    "sensor_id": ID,
+                    "section_ratio": num(0, 1),
+                    "calibrated_ratio": num(0, 1),
+                    "weight": num(0, 1),
+                    "anchor_scan_id": ID,
                 }
             ),
             2,

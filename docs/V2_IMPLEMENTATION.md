@@ -37,9 +37,10 @@ boot 파일은 `/proc/sys/kernel/random/boot_id`, 저장 경로는 v1과 다른 
   null 좌표로 전달한다. 정수 mm 환산 후 0이 되었다는 이유로 제거하지 않는다.
   근거: [고정 SDK HQ 정의](https://github.com/Slamtec/rplidar_sdk/blob/99478e5fb90de3b4a6db0080acacd373f8b36869/README.md),
   [SDK 무효 거리 처리](https://github.com/Slamtec/rplidar_sdk/blob/99478e5fb90de3b4a6db0080acacd373f8b36869/sdk/src/sl_lidar_driver.cpp#L118).
-- 원본 관측과 독립된 필터·공간/시간 중앙값·보간·A/B 단면 융합을 구현했다.
+- 원본 관측과 독립된 센서별 필터·공간/시간 중앙값·보간·개별 단면과 검증된 특징 종합을 구현했다.
   선택적 `configuration.judgment`가 없으면 `NOT_VALIDATED`, `FILL_METHOD_NOT_CONFIGURED`를 보고한다.
-  검증된 설치 보정과 판단 설정에서만 수치 계산하며 단면 면적비와 적재율 보정곡선을 구분한다.
+  A/B 높이를 같은 bin으로 합치지 않는다. 검증된 설치 보정과 판단 설정에서 개별 단면을 계산하고,
+  검증된 센서별 보정곡선·가중치와 시간 정합이 있어야 종합 적재율을 제공한다.
   상세 계산 및 백엔드 확장은 [단면 판단](ORCHESTRATION_JUDGMENT.md)을 따른다.
 - 가림·수거·집게 사건 판별 알고리즘은 활성화하지 않는다.
 - 사건 생성·개정 및 EVIDENCE 생성 인터페이스는 있지만, 실측 검증된 규칙 연결 없이 사건을 생성하지 않는다.

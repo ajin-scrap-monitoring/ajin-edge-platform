@@ -188,16 +188,16 @@ async def test_bundle_transport_keeps_each_scan_in_its_own_rpc():
     class SmallTransport(DeliveryStub):
         async def _call(self, method, value):
             calls.append((method, len(canonical(value))))
-            if len(canonical(value)) > 4096:
+            if len(canonical(value)) > 8192:
                 raise grpc.aio.AioRpcError(
                     grpc.StatusCode.RESOURCE_EXHAUSTED, None, None, "too large"
                 )
             return {"state": "pending"}
 
     bundle = judgment_bundle()
-    assert len(canonical(bundle)) > 4096
+    assert len(canonical(bundle)) > 8192
     await SmallTransport(None).enqueue_bundle(bundle)
-    assert max(n for _, n in calls) <= 4096
+    assert max(n for _, n in calls) <= 8192
     assert sum(method == "Enqueue" for method, _ in calls) == len(bundle) - 1
 
 
