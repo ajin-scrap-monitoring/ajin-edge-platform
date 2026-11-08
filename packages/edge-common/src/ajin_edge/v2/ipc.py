@@ -39,25 +39,30 @@ class DeliveryStub:
         if not isinstance(messages, list) or not 2 <= len(messages) <= 17:
             raise ValueError("invalid evidence bundle size")
         assessment = messages[-1]
-        manifest = [
-            {"message_id": p["message_id"], "digest": hashlib.sha256(canonical(p)).hexdigest()}
-            for p in messages[:-1]
-        ]
+        manifest, sizes = [], []
+        for payload in messages[:-1]:
+            encoded = canonical(payload)
+            manifest.append(
+                {"message_id": payload["message_id"], "digest": hashlib.sha256(encoded).hexdigest()}
+            )
+            sizes.append(len(encoded))
         request = {"assessment": assessment}
         await self._call("Bundle", {**request, "operation": "begin", "evidence": manifest})
         try:
             batch = []
-            for payload in messages[:-1]:
-                candidate = {**request, "operation": "stage", "messages": [*batch, payload]}
-                if batch and (len(batch) == 4 or len(canonical(candidate)) > BUNDLE_RPC_BYTES):
+            base_size = len(canonical({**request, "operation": "stage", "messages": []}))
+            batch_size = base_size
+            for payload, size in zip(messages[:-1], sizes, strict=True):
+                added = size + bool(batch)
+                if batch and (len(batch) == 4 or batch_size + added > BUNDLE_RPC_BYTES):
                     await self._call("Bundle", {**request, "operation": "stage", "messages": batch})
                     batch = []
-                batch.append(payload)
-                if (
-                    len(canonical({**request, "operation": "stage", "messages": batch}))
-                    > BUNDLE_RPC_BYTES
-                ):
+                    batch_size = base_size
+                    added = size
+                if batch_size + added > BUNDLE_RPC_BYTES:
                     raise ValueError("individual evidence exceeds internal RPC capacity")
+                batch.append(payload)
+                batch_size += added
             if batch:
                 await self._call("Bundle", {**request, "operation": "stage", "messages": batch})
             return await self._call("Bundle", {**request, "operation": "commit"})
@@ -118,8 +123,6 @@ async def serve_delivery(store, endpoint, *, site_id, edge_id, latest_status=Non
             if operation == "begin":
                 await store.call("begin_bundle", assessment, request["evidence"])
             elif operation == "stage":
-                if len(canonical(request)) > BUNDLE_RPC_BYTES:
-                    raise ValueError("evidence batch exceeds internal RPC capacity")
                 await store.call("stage_bundle", assessment, request["messages"])
             elif operation == "commit":
                 duplicate = await store.call("commit_bundle", assessment)
@@ -142,13 +145,23 @@ async def serve_delivery(store, endpoint, *, site_id, edge_id, latest_status=Non
     async def stats(request, context):
         return await store.call("stats")
 
+    async def bounded_bundle(decoded, context):
+        request, size = decoded
+        if size > BUNDLE_RPC_BYTES:
+            await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "bundle RPC capacity exceeded")
+        return await bundle(request, context)
+
     handlers = {
         name: grpc.unary_unary_rpc_method_handler(
-            callback, request_deserializer=json.loads, response_serializer=canonical
+            callback,
+            request_deserializer=(lambda data: (json.loads(data), len(data)))
+            if name == "Bundle"
+            else json.loads,
+            response_serializer=canonical,
         )
         for name, callback in (
             ("Enqueue", enqueue),
-            ("Bundle", bundle),
+            ("Bundle", bounded_bundle),
             ("Inspect", inspect),
             ("Stats", stats),
         )

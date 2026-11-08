@@ -225,6 +225,24 @@ async def test_real_ipc_stages_durable_evidence_before_committing_judgment(tmp_p
         assert len(store.index) == len(bundle)
 
 
+async def test_server_rejects_oversized_bundle_rpc_before_storage(tmp_path, monkeypatch):
+    from ajin_edge.v2 import ipc
+
+    monkeypatch.setattr(ipc, "BUNDLE_RPC_BYTES", 1024)
+    with Outbox(tmp_path) as store:
+        server, port = await ipc.serve_delivery(
+            store, "127.0.0.1:0", site_id="site-example", edge_id="edge-example"
+        )
+        try:
+            async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+                with pytest.raises(grpc.aio.AioRpcError) as failure:
+                    await DeliveryStub(channel)._call("Bundle", {"padding": "x" * 2048})
+                assert failure.value.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
+            assert not store.index and not store.meta["leases"]
+        finally:
+            await server.stop(1)
+
+
 def test_stage_directory_sync_failure_can_retry_without_false_assessment(tmp_path, monkeypatch):
     import hashlib
 
