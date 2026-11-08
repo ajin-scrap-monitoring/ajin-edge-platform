@@ -47,6 +47,67 @@ async def test_judgment_bundle_sends_all_evidence_before_assessment():
         await asyncio.gather(task, return_exceptions=True)
 
 
+async def test_judgment_producer_waits_before_building_next_bundle_when_delivery_is_slow():
+    blocked, release = asyncio.Event(), asyncio.Event()
+    delivered, built = [], []
+
+    class Client:
+        async def enqueue_bundle(self, bodies):
+            if not delivered:
+                blocked.set()
+                await release.wait()
+            delivered.append(bodies[-1]["id"])
+
+    status = Status()
+    sender = PendingSender(Client(), status, capacity=1)
+    assert hasattr(sender, "wait_for_capacity"), "producer needs admission before building a bundle"
+
+    async def produce():
+        for index in range(3):
+            await sender.wait_for_capacity()
+            built.append(index)
+            sender.offer([{"id": f"scan-{index}"}, {"id": f"assessment-{index}"}])
+
+    worker = asyncio.create_task(sender.run())
+    producer = asyncio.create_task(produce())
+    try:
+        async with asyncio.timeout(1):
+            await blocked.wait()
+            while len(built) < 2:
+                await asyncio.sleep(0)
+        await asyncio.sleep(0.02)
+        assert built == [0, 1]  # No third completed bundle retained outside the queue.
+        assert not producer.done()
+        assert len(sender.queue) == 1
+        assert status.losses == 0
+        release.set()
+        await asyncio.wait_for(producer, 1)
+        async with asyncio.timeout(1):
+            while len(delivered) < 3:
+                await asyncio.sleep(0.001)
+        assert delivered == [f"assessment-{i}" for i in range(3)]
+        assert status.losses == 0
+    finally:
+        worker.cancel()
+        producer.cancel()
+        await asyncio.gather(worker, producer, return_exceptions=True)
+
+
+async def test_cancelled_capacity_wait_does_not_remove_or_replace_queued_bundle():
+    status = Status()
+    sender = PendingSender(None, status, capacity=1)
+    assert hasattr(sender, "wait_for_capacity"), "capacity wait must be cancellation-safe"
+    original = [{"id": "scan"}, {"id": "assessment"}]
+    sender.offer(original)
+    wait = asyncio.create_task(sender.wait_for_capacity())
+    await asyncio.sleep(0)
+    assert not wait.done()
+    wait.cancel()
+    await asyncio.gather(wait, return_exceptions=True)
+    assert list(sender.queue) == [original]
+    assert status.losses == 0
+
+
 async def test_evidence_local_rejection_does_not_send_dependent_assessment():
     received = []
 

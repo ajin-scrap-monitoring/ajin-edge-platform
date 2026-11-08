@@ -128,6 +128,13 @@ class PendingSender:
     def __init__(self, client, status, *, capacity=10):
         self.client, self.status, self.capacity = client, status, capacity
         self.queue = deque()
+        self._space_available = asyncio.Event()
+
+    async def wait_for_capacity(self):
+        """Single producer: wait before calculating, retaining no extra completed bundle."""
+        while len(self.queue) >= self.capacity:
+            self._space_available.clear()
+            await self._space_available.wait()
 
     def offer(self, payload):
         if isinstance(payload, list) and (not payload or len(payload) > 17):
@@ -145,6 +152,7 @@ class PendingSender:
             delay = 0.1
             if pending is None and self.queue:
                 pending = self.queue.popleft()
+                self._space_available.set()
             if pending is not None:
                 try:
                     if isinstance(pending, list) and len(pending) > 1:
@@ -511,6 +519,9 @@ async def orchestrator(config, stop):
         async def judgments():
             await configured.wait()
             while True:
+                # Build from fresh observations only after the bounded pending
+                # slot is free; a slow durable write must not evict a judgment.
+                await sender.wait_for_capacity()
                 start = time.monotonic()
                 sender.offer(await asyncio.to_thread(orch.assessment_bundle))
                 await asyncio.sleep(max(0, 1 - (time.monotonic() - start)))
