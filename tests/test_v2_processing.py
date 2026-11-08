@@ -314,7 +314,7 @@ def test_periodic_rechecks_utc_after_payload_preparation(monkeypatch):
     engine = ProcessingEngine(configuration(), clock_domain_id="boot-test")
     engine.ingest(scan(ms=0))
     prepared = [False]
-    original = module.deepcopy
+    original = module.copy_observation
 
     def copy_then_delay(value):
         result = original(value)
@@ -322,7 +322,7 @@ def test_periodic_rechecks_utc_after_payload_preparation(monkeypatch):
             prepared[0] = True
         return result
 
-    monkeypatch.setattr(module, "deepcopy", copy_then_delay)
+    monkeypatch.setattr(module, "copy_observation", copy_then_delay)
     monkeypatch.setattr(
         module,
         "utc_now",

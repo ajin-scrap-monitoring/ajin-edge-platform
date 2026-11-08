@@ -160,7 +160,7 @@ def copy_observation(observation):
             "points": [
                 {
                     **p,
-                    "position_mm": dict(p["position_mm"]) if p["position_mm"] else None,
+                    "position_mm": dict(p["position_mm"]) if p["position_mm"] is not None else None,
                     "calculation_reason_codes": list(p["calculation_reason_codes"]),
                 }
                 for p in scan["points"]
