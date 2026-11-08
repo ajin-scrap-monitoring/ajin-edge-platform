@@ -13,7 +13,7 @@ from ajin_edge.v2.processing import (
 from test_v2_processing import configuration, scan
 
 
-def judgment_configuration():
+def legacy_judgment_configuration():
     cfg = configuration()
     for s in cfg["sensors"]:
         s["calibration"]["translation_mm"] = [0, 0, 0]
@@ -43,6 +43,47 @@ def judgment_configuration():
         "fill_calibration": [[0, 0], [1, 1]],
     }
     return cfg
+
+
+def judgment_configuration():
+    cfg = legacy_judgment_configuration()
+    old = cfg["judgment"]
+    sections = []
+    for sensor in cfg["sensors"]:
+        section = deepcopy(old["section"])
+        section.pop("plane_tolerance_mm")
+        section.update(
+            sensor_id=sensor["sensor_id"],
+            filters=deepcopy(old["filters"]),
+            max_interpolation_gap_bins=old["max_interpolation_gap_bins"],
+        )
+        sections.append(section)
+    cfg["judgment"] = {
+        "model_type": "INDEPENDENT_SECTIONS_V1",
+        "method_version": "synthetic-sections-v2",
+        "verification_state": "VERIFIED",
+        "sections": sections,
+        "window": old["window"],
+        "fusion": {
+            "method": "CALIBRATED_WEIGHTED_SECTIONS",
+            "version": "synthetic-fusion-v1",
+            "verification_state": "VERIFIED",
+            "components": [
+                {
+                    "sensor_id": sensor["sensor_id"],
+                    "weight": weight,
+                    "calibration": [[0, 0], [1, 1]],
+                }
+                for sensor, weight in zip(cfg["sensors"], [0.25, 0.75], strict=True)
+            ],
+        },
+    }
+    return cfg
+
+
+def section_profile(body, sensor_id="lidar-a"):
+    entries = body.get("section_profiles")
+    return next(r["profile"] for r in entries if r["sensor_id"] == sensor_id) if entries else None
 
 
 def observation(cfg, sensor, sequence, ms, heights=None, qualities=None, domain="boot-test"):
@@ -82,7 +123,7 @@ def test_mathematical_section_area_and_fill_keep_original_observations():
     assert cfg == original_cfg
     assert body["decision_state"] == "AVAILABLE"
     assert body["fill_estimate"]["ratio"] == pytest.approx(0.5, abs=0.001)
-    profile = body["section_profile"]
+    profile = section_profile(body)
     assert profile["area_ratio"] == pytest.approx(0.5, abs=0.001)
     assert profile["capacity_area_mm2"] == 250000
     assert profile["area_mm2"] == pytest.approx(125000, abs=250)
@@ -101,8 +142,8 @@ def test_low_quality_is_only_filtered_in_judgment_and_short_interior_gap_is_inte
     original = feed(orch, cfg, qualities=[100, 100, 0, 100, 100])
     body = result(orch)
     assert body["decision_state"] == "LIMITED"
-    assert body["section_profile"]["bins"][2]["source"] == "INTERPOLATED"
-    assert body["section_profile"]["coverage_ratio"] == 0.8
+    assert section_profile(body)["bins"][2]["source"] == "INTERPOLATED"
+    assert section_profile(body)["coverage_ratio"] == 0.8
     assert body["fill_estimate"]["ratio"] == pytest.approx(0.5, abs=0.001)
     bundle = orch.assessment_bundle(now_ns=1000000000)
     assert len(bundle) == 7
@@ -130,12 +171,13 @@ def test_temporal_median_rejects_transient_spike_and_owns_immutable_input_copy()
 
 def test_spatial_median_removes_isolated_bin_spike_before_interpolation():
     cfg = judgment_configuration()
-    cfg["judgment"]["filters"]["spatial_radius_bins"] = 1
+    for section in cfg["judgment"]["sections"]:
+        section["filters"]["spatial_radius_bins"] = 1
     orch = Orchestrator(cfg)
     feed(orch, cfg, [500, 500, 900, 500, 500])
     body = result(orch)
-    assert body["section_profile"]["bins"][2]["source"] == "INTERPOLATED"
-    assert all(s["spatial_rejected_bins"] == 3 for s in body["section_profile"]["sensor_stats"])
+    assert section_profile(body)["bins"][2]["source"] == "INTERPOLATED"
+    assert all(s["spatial_rejected_bins"] == 3 for s in section_profile(body)["sensor_stats"])
     assert body["fill_estimate"]["ratio"] == pytest.approx(0.5, abs=0.001)
 
 
@@ -149,16 +191,17 @@ def test_spatial_median_removes_isolated_bin_spike_before_interpolation():
 )
 def test_never_extrapolates_or_bridges_long_gaps_or_masks(qualities, active):
     cfg = judgment_configuration()
-    cfg["judgment"]["section"]["active_bins"] = active
+    for section in cfg["judgment"]["sections"]:
+        section["active_bins"] = active
     orch = Orchestrator(cfg)
     feed(orch, cfg, qualities=qualities)
     body = result(orch)
     assert body["fill_estimate"] is None
-    assert body["section_profile"]["area_ratio"] is None
+    assert section_profile(body)["area_ratio"] is None
     assert "SECTION_INCOMPLETE" in body["reason_codes"]
 
 
-def test_ab_disagreement_is_not_interpolated_away():
+def test_different_sensor_heights_are_not_rejected_or_averaged_in_shared_bins():
     cfg = judgment_configuration()
     orch = Orchestrator(cfg)
     for seq, ms in enumerate([800, 900, 1000], 1):
@@ -170,12 +213,13 @@ def test_ab_disagreement_is_not_interpolated_away():
                 now_ns=ms * 1000000,
             )
     body = result(orch)
-    assert body["section_profile"]["bins"][2]["source"] == "CONFLICT"
-    assert body["fill_estimate"] is None
-    assert "SENSOR_DISAGREEMENT" in body["reason_codes"]
+    assert section_profile(body)["bins"][2]["height_mm"] == pytest.approx(500, abs=1)
+    assert section_profile(body, "lidar-b")["bins"][2]["height_mm"] == pytest.approx(900, abs=1)
+    assert body["fill_estimate"]["ratio"] == pytest.approx(0.56, abs=0.001)
+    assert "SENSOR_DISAGREEMENT" not in body["reason_codes"]
 
 
-def test_ab_complementary_sections_are_fused_in_common_coordinates():
+def test_other_sensor_never_fills_a_sections_missing_bins():
     cfg = judgment_configuration()
     orch = Orchestrator(cfg)
     for seq, ms in enumerate([800, 900, 1000], 1):
@@ -185,9 +229,9 @@ def test_ab_complementary_sections_are_fused_in_common_coordinates():
         ]:
             orch.ingest(observation(cfg, sid, seq, ms, qualities=qualities), now_ns=ms * 1000000)
     body = result(orch)
-    assert body["fill_estimate"]["ratio"] == pytest.approx(0.5, abs=0.001)
-    assert body["section_profile"]["bins"][0]["sensor_ids"] == ["lidar-a"]
-    assert body["section_profile"]["bins"][4]["sensor_ids"] == ["lidar-b"]
+    assert body["fill_estimate"] is None
+    assert section_profile(body)["bins"][4]["source"] == "UNAVAILABLE"
+    assert section_profile(body, "lidar-b")["bins"][0]["source"] == "UNAVAILABLE"
 
 
 @pytest.mark.parametrize(
@@ -209,21 +253,28 @@ def test_unverified_or_missing_settings_never_emit_numeric_judgment(change, reas
     orch = Orchestrator(cfg)
     feed(orch, cfg)
     body = result(orch)
-    assert body["fill_estimate"] is None and body["section_profile"] is None
+    assert body["fill_estimate"] is None and section_profile(body) is None
     assert reason in body["reason_codes"]
-    assert body["evidence"]["scans"] == []
+    if change == "method":
+        assert body["evidence"]["scans"] == []
+    else:
+        assert section_profile(body, "lidar-b") is not None
+        assert {r["sensor_id"] for r in body["evidence"]["scans"]} == {"lidar-b"}
 
 
 def test_section_ratio_is_not_automatically_a_volume_fill_ratio():
     cfg = judgment_configuration()
-    cfg["judgment"]["fill_calibration"] = None
+    fusion = cfg["judgment"]["fusion"]
+    cfg["judgment"]["fusion"] = None
     orch = Orchestrator(cfg)
     feed(orch, cfg)
     body = result(orch)
-    assert body["section_profile"]["area_ratio"] == pytest.approx(0.5, abs=0.001)
+    assert section_profile(body)["area_ratio"] == pytest.approx(0.5, abs=0.001)
     assert body["fill_estimate"] is None
     assert body["capabilities"]["fill"] == "NOT_VALIDATED"
-    cfg["judgment"]["fill_calibration"] = [[0, 0], [0.5, 0.3], [1, 1]]
+    cfg["judgment"]["fusion"] = fusion
+    for component in fusion["components"]:
+        component["calibration"] = [[0, 0], [0.5, 0.3], [1, 1]]
     orch = Orchestrator(cfg)
     feed(orch, cfg)
     assert result(orch)["fill_estimate"]["ratio"] == pytest.approx(0.3, abs=0.001)
@@ -240,7 +291,7 @@ def test_expired_scans_stream_restart_and_clock_mismatch_are_not_mixed():
     assert orch.assessment(now_ns=1100000000)["reason_codes"] == ["INSUFFICIENT_HISTORY"]
     other = observation(cfg, "lidar-b", 4, 1100, domain="other-boot")
     orch.ingest(other, now_ns=1100000000)
-    assert orch.assessment(now_ns=1100000000)["reason_codes"] == ["SENSOR_TIME_MISMATCH"]
+    assert "SENSOR_TIME_MISMATCH" in orch.assessment(now_ns=1100000000)["reason_codes"]
 
 
 def test_calculation_expiration_is_checked_again_before_publication(monkeypatch):
@@ -261,15 +312,15 @@ def test_invalid_judgment_settings_are_rejected(change):
     cfg = judgment_configuration()
     model = cfg["judgment"]
     if change == "length":
-        model["section"]["active_bins"].pop()
+        model["sections"][0]["active_bins"].pop()
     elif change == "axis":
-        model["section"]["axis_xy"] = [1, 1]
+        model["sections"][0]["axis_xy"] = [1, 1]
     elif change == "curve":
-        model["fill_calibration"] = [[0, 1], [1, 0]]
+        model["fusion"]["components"][0]["calibration"] = [[0, 1], [1, 0]]
     elif change == "window":
         model["window"]["min_scans"] = 6
     else:
-        model["section"]["plane_tolerance_mm"] = float("nan")
+        model["sections"][0]["origin_xy_mm"][0] = float("nan")
     with pytest.raises(ValueError):
         validate_configuration(cfg)
 
@@ -279,7 +330,7 @@ def test_public_contract_rejects_inconsistent_section_totals():
     orch = Orchestrator(cfg)
     feed(orch, cfg)
     body = result(orch)
-    body["section_profile"]["area_mm2"] += 100
+    section_profile(body)["area_mm2"] += 100
     with pytest.raises(ValueError):
         validate_message(body)
 
@@ -289,8 +340,8 @@ def test_mutating_a_result_cannot_change_future_geometry():
     orch = Orchestrator(cfg)
     feed(orch, cfg)
     body = result(orch)
-    body["section_profile"]["axis_xy"][:] = [0, 1]
-    body["section_profile"]["origin_xy_mm"][:] = [100, 100]
+    section_profile(body)["axis_xy"][:] = [0, 1]
+    section_profile(body)["origin_xy_mm"][:] = [100, 100]
     assert result(orch)["fill_estimate"]["ratio"] == pytest.approx(0.5, abs=0.001)
 
 
@@ -318,12 +369,19 @@ def test_periodic_original_delivery_is_identical_with_and_without_judgment():
 
 @pytest.mark.parametrize(
     "path",
-    [("window", "scan_count"), ("filters", "spatial_radius_bins"), ("section", "bin_width_mm")],
+    [
+        ("window", "scan_count"),
+        ("sections", 0, "filters", "spatial_radius_bins"),
+        ("sections", 0, "bin_width_mm"),
+    ],
 )
 def test_integer_parameters_reject_floats_before_constructing_runtime(path):
     cfg = judgment_configuration()
     model = cfg["judgment"]
-    model[path[0]][path[1]] = float(model[path[0]][path[1]])
+    parent = model
+    for key in path[:-1]:
+        parent = parent[key]
+    parent[path[-1]] = float(parent[path[-1]])
     with pytest.raises(ValueError):
         validate_configuration(cfg)
 

@@ -20,9 +20,8 @@ async def test_three_services_configuration_ack_then_raw_and_assessment(
 ):
     config = judgment_configuration() if with_judgment else configuration()
     if with_judgment:
-        config["judgment"]["section"].update(
-            floor_z_mm=[0], ceiling_z_mm=[2000], active_bins=[True]
-        )
+        for section in config["judgment"]["sections"]:
+            section.update(floor_z_mm=[0], ceiling_z_mm=[2000], active_bins=[True])
     config["coordinate_frame"].update(
         unit="mm",
         origin_description="Test origin",

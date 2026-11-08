@@ -6,7 +6,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from .contracts import validate_message
-from .judgment import SectionJudgment, mapped_fill
+from .judgment import SectionJudgment, fill_enabled, is_independent
 from .processing import canonical, envelope, utc_now, validate_configuration
 
 
@@ -130,11 +130,7 @@ class Orchestrator:
     def _empty_assessment(self):
         # Without a rule there are no "used" scans; input is not evidence of a calculation.
         model = self.config.get("judgment")
-        enabled = bool(
-            model
-            and model["verification_state"] == "VERIFIED"
-            and model["fill_calibration"] is not None
-        )
+        enabled = fill_enabled(model)
         return {
             **envelope(self.config, "edge_assessment"),
             "assessment_type": "STATE",
@@ -160,11 +156,7 @@ class Orchestrator:
         now_ns = time.monotonic_ns() if now_ns is None else now_ns
         body = self._empty_assessment()
         model = self.config.get("judgment")
-        enabled = bool(
-            model
-            and model["verification_state"] == "VERIFIED"
-            and model["fill_calibration"] is not None
-        )
+        enabled = fill_enabled(model)
         body["capabilities"]["fill"] = "ENABLED" if enabled else "NOT_VALIDATED"
         profile, reasons, used = self.judgment.calculate(now_ns)
         if (
@@ -180,8 +172,10 @@ class Orchestrator:
             profile, reasons, used = None, ["INPUT_EXPIRED_DURING_JUDGMENT"], []
         body["generated_at"] = generated_at or utc_now()
         body["reason_codes"] = reasons
+        if is_independent(model):
+            body["section_profiles"] = profile["section_profiles"] if profile else None
+            body["fusion_result"] = profile["fusion_result"] if profile else None
         if model:
-            body["section_profile"] = profile
             body["rule_version"] = model["method_version"]
         if used:
             stamps = [o["scan"]["acquired_at"] for o in used]
@@ -190,13 +184,16 @@ class Orchestrator:
                 observed_to=max(stamps, key=datetime.fromisoformat),
             )
             body["evidence"]["scans"] = [self.reference(o) for o in used]
-        if profile and profile["area_ratio"] is not None:
-            body["decision_state"] = "LIMITED" if reasons else "AVAILABLE"
-            if enabled:
+        if profile:
+            if any(r["state"] != "UNAVAILABLE" for r in profile["section_profiles"]):
+                body["decision_state"] = "LIMITED"
+            fusion = profile["fusion_result"]
+            if fusion is not None:
+                body["decision_state"] = "LIMITED" if reasons else "AVAILABLE"
                 body["fill_state"] = "AVAILABLE"
                 body["fill_estimate"] = {
-                    "ratio": mapped_fill(profile["area_ratio"], model["fill_calibration"]),
-                    "method_version": model["method_version"],
+                    "ratio": fusion["ratio"],
+                    "method_version": fusion["model_version"],
                 }
         validate_message(body)
         return body, used

@@ -3,7 +3,12 @@
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
-from .judgment_schema import JUDGMENT_SCHEMA, SECTION_PROFILE_SCHEMA
+from .judgment_schema import (
+    FUSION_RESULT_SCHEMA,
+    JUDGMENT_SCHEMA,
+    SECTION_PROFILE_SCHEMA,
+    SECTION_RESULT_SCHEMA,
+)
 from .processing import SAFE_INT, canonical, identifier, integer, validate_configuration
 
 
@@ -168,6 +173,10 @@ ASSESSMENT_SCHEMA = message_schema(
     {"original_message_id": ID},
 )
 ASSESSMENT_SCHEMA["properties"]["section_profile"] = nullable(SECTION_PROFILE_SCHEMA)
+ASSESSMENT_SCHEMA["properties"]["section_profiles"] = nullable(
+    array(SECTION_RESULT_SCHEMA, minItems=2, maxItems=2)
+)
+ASSESSMENT_SCHEMA["properties"]["fusion_result"] = nullable(FUSION_RESULT_SCHEMA)
 STATUS_SCHEMA = message_schema(
     "edge_status",
     {
@@ -413,6 +422,12 @@ def _assessment(payload):
         if datetime.fromisoformat(start) > datetime.fromisoformat(end):
             raise ValueError("reversed observation interval")
     profile = payload.get("section_profile")
+    if ("section_profiles" in payload) != ("fusion_result" in payload):
+        raise ValueError("section results and fusion result must be explicit together")
+    if "section_profiles" in payload:
+        if "section_profile" in payload:
+            raise ValueError("legacy and independent sections cannot be mixed")
+        _independent_sections(payload)
     if profile is not None:
         _section_profile(profile)
         if not payload["evidence"]["scans"] or payload["rule_version"] is None:
@@ -424,6 +439,83 @@ def _assessment(payload):
             raise ValueError("section coordinate frame mismatch")
         if profile["area_ratio"] is None and payload["fill_estimate"] is not None:
             raise ValueError("incomplete section cannot produce fill")
+
+
+def _independent_sections(payload):
+    import math
+
+    results, fusion = payload["section_profiles"], payload["fusion_result"]
+    if results is None:
+        if fusion is not None or payload["fill_estimate"] is not None:
+            raise ValueError("unavailable sections cannot produce fusion")
+        return
+    ids = {r["sensor_id"] for r in results}
+    if len(ids) != len(results):
+        raise ValueError("duplicate sensor section")
+    refs = payload["evidence"]["scans"]
+    if len({(r["sensor_id"], r["scan_id"]) for r in refs}) != len(refs):
+        raise ValueError("duplicate section evidence")
+    profiles = {}
+    for result in results:
+        profile = result["profile"]
+        valid = profile is not None and profile["area_ratio"] is not None
+        if (result["state"] != "UNAVAILABLE") != valid:
+            raise ValueError("sensor section availability mismatch")
+        if profile is None:
+            continue
+        _section_profile(profile)
+        sid = result["sensor_id"]
+        own_refs = [r for r in refs if r["sensor_id"] == sid]
+        if (
+            not own_refs
+            or payload["rule_version"] is None
+            or any(r["coordinate_frame_id"] != profile["coordinate_frame_id"] for r in own_refs)
+            or profile["sensor_stats"][0]["sensor_id"] != sid
+            or profile["sensor_stats"][0]["scan_count"] != len(own_refs)
+            or any(set(b["sensor_ids"]) - {sid} for b in profile["bins"])
+        ):
+            raise ValueError("sensor section evidence mismatch")
+        normal, axis = profile["plane_normal"], profile["axis_xy"]
+        if (
+            not math.isclose(sum(v * v for v in normal), 1, abs_tol=1e-8)
+            or math.hypot(normal[0], normal[1]) < 1e-6
+            or abs(normal[0] * axis[0] + normal[1] * axis[1]) > 1e-8
+        ):
+            raise ValueError("invalid sensor section plane")
+        profiles[sid] = profile
+    if fusion is None:
+        if payload["fill_estimate"] is not None:
+            raise ValueError("fill requires calibrated fusion")
+        return
+    components = fusion["components"]
+    weights = math.fsum(c["weight"] for c in components)
+    if (
+        {c["sensor_id"] for c in components} != ids
+        or len(profiles) != 2
+        or any(r["state"] == "UNAVAILABLE" for r in results)
+        or any(c["weight"] <= 0 for c in components)
+        or not math.isclose(weights, 1, abs_tol=1e-9, rel_tol=0)
+        or "SENSOR_TIME_MISMATCH" in payload["reason_codes"]
+    ):
+        raise ValueError("invalid fusion inputs or weights")
+    if len({p["coordinate_frame_id"] for p in profiles.values()}) != 1:
+        raise ValueError("fusion coordinate frames differ")
+    for c in components:
+        if not math.isclose(
+            c["section_ratio"], profiles[c["sensor_id"]]["area_ratio"], abs_tol=1e-9
+        ) or not any(
+            r["sensor_id"] == c["sensor_id"] and r["scan_id"] == c["anchor_scan_id"] for r in refs
+        ):
+            raise ValueError("fusion section feature mismatch")
+    expected = math.fsum(c["weight"] * c["calibrated_ratio"] for c in components) / weights
+    fill = payload["fill_estimate"]
+    if (
+        not math.isclose(expected, fusion["ratio"], abs_tol=1e-9)
+        or fill is None
+        or fill["method_version"] != fusion["model_version"]
+        or not math.isclose(fill["ratio"], expected, abs_tol=1e-9)
+    ):
+        raise ValueError("fusion result mismatch")
 
 
 def _section_profile(profile):
