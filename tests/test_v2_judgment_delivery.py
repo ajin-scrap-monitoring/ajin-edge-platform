@@ -253,6 +253,42 @@ def test_stage_directory_sync_failure_can_retry_without_false_assessment(tmp_pat
         assert all(store.get(b["message_id"]) for b in bundle)
 
 
+def test_retry_restores_acked_evidence_after_lease_was_released(tmp_path):
+    import hashlib
+
+    bundle = judgment_bundle()
+    manifest = [
+        {"message_id": b["message_id"], "digest": hashlib.sha256(canonical(b)).hexdigest()}
+        for b in bundle[:-1]
+    ]
+    with Outbox(tmp_path) as store:
+        store.begin_bundle(bundle[-1], manifest)
+        store.stage_bundle(bundle[-1], bundle[:4])
+        for body in bundle[:4]:
+            store.delivered(body["message_id"], "2026-09-20T01:00:00Z")
+        store.release(bundle[-1]["message_id"])
+        assert all(store.get(b["message_id"]) is None for b in bundle[:4])
+        store.begin_bundle(bundle[-1], manifest)
+        for offset in range(0, len(bundle) - 1, 4):
+            store.stage_bundle(bundle[-1], bundle[offset : min(offset + 4, len(bundle) - 1)])
+        store.commit_bundle(bundle[-1])
+        assert all(store.get(b["message_id"]) for b in bundle)
+
+
+async def test_transient_stage_failure_keeps_lease_for_retry():
+    operations = []
+
+    class Interrupted(DeliveryStub):
+        async def _call(self, method, value):
+            operations.append(value["operation"])
+            if value["operation"] == "stage":
+                raise grpc.aio.AioRpcError(grpc.StatusCode.UNAVAILABLE, None, None, "interrupted")
+
+    with pytest.raises(grpc.aio.AioRpcError):
+        await Interrupted(None).enqueue_bundle(judgment_bundle())
+    assert operations == ["begin", "stage"]
+
+
 def test_staged_evidence_survives_ack_before_assessment_commit(tmp_path):
     import hashlib
 

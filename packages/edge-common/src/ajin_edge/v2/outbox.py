@@ -155,8 +155,8 @@ class Outbox:
             finally:
                 os.close(descriptor)
 
-    def _atomic(self, path, value, *, reserved=False, sync=True):
-        data = canonical(value)
+    def _atomic(self, path, value, *, reserved=False, sync=True, encoded=None):
+        data = canonical(value) if encoded is None else encoded
         needed = self._allocation(len(data))
         ceiling = self.limit - self.external_reserve - (0 if reserved else self.reserve)
         if (
@@ -193,7 +193,7 @@ class Outbox:
             return {s["scan_id"] for s in payload["evidence"]["scans"]}
         return set()
 
-    def _index(self, path, record):
+    def _index(self, path, record, *, payload_bytes=None):
         payload = record["payload"]
         if path.name.endswith(".acked.record"):
             record = {**record, "state": "acked"}
@@ -212,7 +212,7 @@ class Outbox:
             delivery_kind=payload.get("delivery_kind"),
             scans=self._scans(payload),
             generated_at=payload["generated_at"],
-            payload_bytes=len(canonical(payload)),
+            payload_bytes=len(canonical(payload)) if payload_bytes is None else payload_bytes,
         )
 
     def get(self, message_id):
@@ -226,28 +226,33 @@ class Outbox:
             record["state"] = "acked"
         return record
 
-    def enqueue(self, payload, *, sync=True):
-        validate_message(payload)
+    def enqueue(self, payload, *, sync=True, restore_acked=False):
+        encoded = validate_message(payload)
+        return self._enqueue_validated(payload, encoded, sync=sync, restore_acked=restore_acked)
+
+    def _enqueue_validated(self, payload, encoded, *, sync, restore_acked=False):
         mid = payload["message_id"]
-        digest = hashlib.sha256(canonical(payload)).hexdigest()
+        digest = hashlib.sha256(encoded).hexdigest()
         previous = self.index.get(mid) or self.meta["receipts"].get(mid)
         if previous:
             if previous["digest"] != digest:
                 raise ConflictError("same message ID has different content")
-            return True
+            if not (restore_acked and mid not in self.index):
+                return True
         record = {
             "payload": payload,
             "digest": digest,
-            "state": "pending",
+            "state": "acked" if mid in self.meta["receipts"] else "pending",
             "reason": None,
             "order": time.time_ns(),
         }
-        needed = self._allocation(len(canonical(record)))
+        record_bytes = canonical(record)
+        needed = self._allocation(len(record_bytes))
         try:
             self._make_room(needed)
             path = self._path(mid)
-            self._atomic(path, record, sync=sync)
-            self._index(path, record)
+            self._atomic(path, record, sync=sync, encoded=record_bytes)
+            self._index(path, record, payload_bytes=len(encoded))
         except (CapacityError, OSError):
             self._loss(payload, "STORAGE_FULL")
             raise CapacityError("message was not stored") from None
@@ -428,7 +433,9 @@ class Outbox:
             or lease.get("assessment_digest") != hashlib.sha256(canonical(assessment)).hexdigest()
         ):
             raise ValueError("bundle preparation missing, expired or changed")
+        prepared = []
         for payload in payloads:
+            encoded = validate_message(payload)
             if (
                 payload.get("message_type") != "lidar_measurement"
                 or payload.get("delivery_kind") != "EVIDENCE"
@@ -438,12 +445,16 @@ class Outbox:
                     for k in ("site_id", "edge_id", "config_revision")
                 )
                 or lease["evidence_manifest"].get(payload["message_id"])
-                != hashlib.sha256(canonical(payload)).hexdigest()
+                != hashlib.sha256(encoded).hexdigest()
             ):
                 raise ValueError("evidence batch identity mismatch")
+            prepared.append((payload, encoded))
         try:
-            for payload in payloads:
-                self.enqueue(payload, sync=False)
+            for payload, encoded in prepared:
+                # A lost/expired preparation lease may have allowed collection
+                # of an ACKed body. Recreate its exact hash-matched evidence for
+                # local commit validation without losing the proven remote ACK.
+                self._enqueue_validated(payload, encoded, sync=False, restore_acked=True)
         finally:
             # Partial writes remain replayable and protected by the persisted
             # lease; never acknowledge the batch before this barrier succeeds.

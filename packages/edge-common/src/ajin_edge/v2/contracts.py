@@ -286,7 +286,7 @@ VALIDATORS = {
 
 def validate_message(payload):
     try:
-        canonical(payload)  # Reject non-finite floats, including deep extensions.
+        encoded = canonical(payload)  # Reject non-finite floats, including deep extensions.
         kind = payload["message_type"]
         structural = payload
         if kind == "lidar_measurement":
@@ -311,6 +311,7 @@ def validate_message(payload):
             _measurement(payload)
         elif kind == "edge_assessment":
             _assessment(payload)
+        return encoded
     except (ValidationError, KeyError, TypeError, OverflowError) as error:
         raise ValueError("invalid v2 message") from error
 

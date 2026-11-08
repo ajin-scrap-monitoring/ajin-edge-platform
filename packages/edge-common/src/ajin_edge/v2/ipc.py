@@ -61,11 +61,20 @@ class DeliveryStub:
             if batch:
                 await self._call("Bundle", {**request, "operation": "stage", "messages": batch})
             return await self._call("Bundle", {**request, "operation": "commit"})
-        except BaseException:
-            try:
-                await self._call("Bundle", {**request, "operation": "abort"})
-            except grpc.aio.AioRpcError:
-                pass  # The bounded persisted lease still expires after process/connection loss.
+        except BaseException as error:
+            permanent = isinstance(error, ValueError) or (
+                isinstance(error, grpc.aio.AioRpcError)
+                and error.code()
+                in (grpc.StatusCode.INVALID_ARGUMENT, grpc.StatusCode.ALREADY_EXISTS)
+            )
+            if permanent:
+                try:
+                    await self._call("Bundle", {**request, "operation": "abort"})
+                except grpc.aio.AioRpcError:
+                    pass
+            # A retryable failure/cancellation retains the bounded persisted
+            # lease. Otherwise already ACKed evidence could be collected before
+            # the same pending bundle retries. Abandoned leases still expire.
             raise
 
     async def inspect(self, message_id):
