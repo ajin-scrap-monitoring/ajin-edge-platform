@@ -1,6 +1,8 @@
 """Independent delivery scheduling; collection never awaits backend HTTP."""
 
+import asyncio
 import time
+from datetime import datetime
 
 from .transport import Backoff
 
@@ -34,42 +36,71 @@ class DeliveryWorker:
             and now - self.last_status_attempt >= 1
             and not self.previous_was_status
         )
-        row = None if use_status else await self.store.call("next_ready", pin=True)
-        if row is None and status is not None:
-            use_status = True
-        payload = status if use_status else row["payload"] if row else None
-        if payload is None:
-            return False
-        self.previous_was_status = use_status
-        if use_status:
-            self.last_status_attempt = now
+        rows = []
         try:
-            result = await self.transport.send(payload)
-            self.reason = result.reason
-            if result.kind == "accepted":
-                if not use_status:
-                    await self.store.call("delivered", payload["message_id"], result.received_at)
-                elif (
-                    self.latest_status.get("payload", {}).get("message_id") == payload["message_id"]
+            for _ in range(4 - int(use_status)):
+                row = await self.store.call("next_ready", pin=True)
+                if row is None:
+                    break
+                rows.append(row)
+            if not rows and status is not None:
+                use_status = True
+            payloads = ([status] if use_status else []) + [r["payload"] for r in rows]
+            if not payloads:
+                return False
+            self.previous_was_status = use_status
+            if use_status:
+                self.last_status_attempt = now
+            # Bound network work and memory; each request retains its own body,
+            # idempotency key and storage ACK. Arrival order was never guaranteed.
+            results = await asyncio.gather(
+                *(self.transport.send(p) for p in payloads), return_exceptions=True
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+            acknowledgements = []
+            progress = []
+            retries = []
+            reasons = []
+            for index, (payload, result) in enumerate(zip(payloads, results, strict=True)):
+                is_status = use_status and index == 0
+                if result.reason:
+                    reasons.append(result.reason)
+                if result.kind == "accepted":
+                    progress.append(result.received_at)
+                    if not is_status:
+                        acknowledgements.append((payload["message_id"], result.received_at))
+                elif result.kind == "auth":
+                    self.blocked_token = self.transport.token
+                elif result.kind == "configuration":
+                    self.configuration_blocked = True
+                elif result.kind == "quarantine":
+                    if not is_status:
+                        await self.store.call("quarantine", payload["message_id"], result.reason)
+                else:
+                    retries.append(result.retry_after)
+                if (
+                    is_status
+                    and result.kind in ("accepted", "quarantine")
+                    and self.latest_status.get("payload", {}).get("message_id")
+                    == payload["message_id"]
                 ):
                     self.latest_status.clear()
-                self.backoff.success()
-                self.last_progress_at = result.received_at
-            elif result.kind == "auth":
-                self.blocked_token = self.transport.token
-            elif result.kind == "configuration":
-                self.configuration_blocked = True
-            elif result.kind == "quarantine":
-                if not use_status:
-                    await self.store.call("quarantine", payload["message_id"], result.reason)
-                elif (
-                    self.latest_status.get("payload", {}).get("message_id") == payload["message_id"]
-                ):
-                    self.latest_status.clear()
-            else:
+            if acknowledgements:
+                await self.store.call("delivered_many", acknowledgements)
+            self.reason = reasons[0] if reasons else ""
+            if progress:
+                self.last_progress_at = max(
+                    [*progress, *([self.last_progress_at] if self.last_progress_at else [])],
+                    key=datetime.fromisoformat,
+                )
+            if retries:
                 finished = now + max(0, self.clock() - started)
-                self.next_attempt = finished + max(self.backoff.failure(), result.retry_after)
+                self.next_attempt = finished + max(self.backoff.failure(), *retries)
+            else:
+                self.backoff.success()
         finally:
-            if row is not None:
-                await self.store.call("unpin", payload["message_id"])
+            for row in rows:
+                await self.store.call("unpin", row["payload"]["message_id"])
         return True

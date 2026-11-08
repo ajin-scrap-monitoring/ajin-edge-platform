@@ -20,35 +20,18 @@ from ajin_edge.transport import read_token
 from ajin_edge.wire import lidar_pb2, lidar_pb2_grpc
 
 from .adapter import from_frame
+from .auxiliary_storage import STATUS_RESERVE, auxiliary_bytes
+from .configuration_state import control_path, effective_runtime
 from .contracts import validate_message
 from .ipc import OBSERVATIONS, OPTIONS, DeliveryStub, ObservationBroker, serve_delivery
 from .orchestration import ConfigurationGate, Orchestrator
 from .outbox import CapacityError, Outbox
-from .processing import ProcessingEngine, canonical, utc_now
+from .processing import ProcessingEngine, canonical, identifier, utc_now
 from .transport import DeliveryClient
 from .worker import DeliveryWorker
 
-STATUS_RESERVE = 1024 * 1024
 
-
-def status_bytes(directory):
-    root = Path(directory)
-    if not root.exists():
-        return 0
-    total = 0
-    for path in root.iterdir():
-        try:
-            stat = path.stat()
-            if path.is_file():
-                total += max(
-                    ((stat.st_size + 4095) // 4096) * 4096, getattr(stat, "st_blocks", 0) * 512
-                )
-        except FileNotFoundError:
-            continue  # Another producer completed an atomic replacement.
-    return total
-
-
-def load_runtime(path):
+def load_runtime(path, *, apply_control=True):
     config = json.loads(Path(path).read_text(encoding="utf-8"))
     registration = config["configuration"]
     validate_message(registration)
@@ -72,6 +55,13 @@ def load_runtime(path):
         raise ValueError("outbox and status directories must be separate siblings")
     # Validate origin without exposing token or making any requests.
     DeliveryClient(config["backend_origin"], "validation-only", None)
+    if "driver_config_revision" in config:
+        identifier(config["driver_config_revision"])
+    if "configuration_state_file" in config:
+        identifier(config["driver_config_revision"])
+        control_path(config)
+        if apply_control:
+            config = effective_runtime(config)
     return config
 
 
@@ -82,6 +72,11 @@ class LocalStatus:
         self.losses = 0
         self.reason = ""
         self.instance_id = str(uuid4())
+        self.clock_domain_id = (
+            Path(config["clock_domain_file"]).read_text().strip()
+            if "clock_domain_file" in config
+            else None
+        )
         self.last_backlog_loss = None
 
     def lost(self, reason):
@@ -106,7 +101,7 @@ class LocalStatus:
         # Each of the three v2 writers has one bounded snapshot and one replacement.
         if (
             len(canonical(telemetry)) > 60000
-            or status_bytes(self.config["status_dir"]) > STATUS_RESERVE - 65536
+            or auxiliary_bytes(self.config) > STATUS_RESERVE - 65536
         ):
             raise CapacityError("bounded status storage exhausted")
         atomic_json(
@@ -115,6 +110,7 @@ class LocalStatus:
                 "schema_version": "2.0",
                 "service": self.service,
                 "instance_id": self.instance_id,
+                "clock_domain_id": self.clock_domain_id,
                 "site_id": registration["site_id"],
                 "edge_id": registration["edge_id"],
                 "config_revision": registration["config_revision"],
@@ -199,14 +195,21 @@ async def processing(config, stop):
     server, _ = await broker.serve(config["observation_endpoint"])
     loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v2-scan-processing")
+    source_revision = config.get("driver_config_revision", registration["config_revision"])
+    cutoff_ns = time.monotonic_ns() if config.get("configuration_activation") else None
+    transition_scans = 0
 
     def ingest_frame(frame, sensor_id):
+        nonlocal transition_scans
         raw = from_frame(
             frame,
             edge_id=registration["edge_id"],
             sensor_id=sensor_id,
-            revision=registration["config_revision"],
+            revision=source_revision,
         )
+        if cutoff_ns is not None and int(raw["acquired_monotonic_ns"]) < cutoff_ns:
+            transition_scans += 1
+            return None
         return engine.ingest(raw)
 
     async with grpc.aio.insecure_channel(config["delivery_endpoint"], options=OPTIONS) as channel:
@@ -255,6 +258,7 @@ async def processing(config, stop):
                     "DEGRADED" if status.reason else "HEALTHY",
                     dropped_scans=engine.dropped_scans,
                     dropped_observations=broker.dropped,
+                    configuration_transition_scans=transition_scans,
                 )
                 await asyncio.sleep(max(0, 1 - (time.monotonic() - start)))
 
@@ -279,7 +283,7 @@ async def uplink(config, stop):
     with Outbox(
         config["storage_dir"],
         external_reserve_bytes=STATUS_RESERVE,
-        external_usage=lambda: status_bytes(config["status_dir"]),
+        external_usage=lambda: auxiliary_bytes(config),
     ) as store:
         server, _ = await serve_delivery(
             store,
@@ -517,18 +521,96 @@ async def orchestrator(config, stop):
             )
 
 
+def configuration_stamps(path, config):
+    paths = [Path(path)]
+    if "configuration_state_file" in config:
+        paths.append(Path(config["configuration_state_file"]))
+    return tuple((s.st_mtime_ns, s.st_size, s.st_ino) for s in (p.stat() for p in paths))
+
+
+def load_generation(path):
+    config = load_runtime(path)
+    for _ in range(10):
+        before = configuration_stamps(path, config)
+        candidate = load_runtime(path)
+        after = configuration_stamps(path, candidate)
+        if before == after:
+            return candidate, after
+        config = candidate
+    raise ValueError("configuration changes too rapidly")
+
+
+async def run_service(role, path, stop):
+    """Recreate one service generation on committed configuration changes only."""
+    stopped = asyncio.create_task(stop.wait())
+    try:
+        while not stop.is_set():
+            config, stamps = load_generation(path)
+            fingerprint = canonical(config)
+            generation_stop = asyncio.Event()
+            worker = asyncio.create_task(
+                {"processing": processing, "uplink": uplink, "orchestrator": orchestrator}[role](
+                    config, generation_stop
+                )
+            )
+            failure = None
+            try:
+                while not stop.is_set():
+                    done, _ = await asyncio.wait(
+                        (worker, stopped), timeout=0.2, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if worker in done:
+                        await worker
+                        if not stop.is_set():
+                            raise RuntimeError("service generation stopped unexpectedly")
+                        return
+                    if stopped in done:
+                        return
+                    try:
+                        current = configuration_stamps(path, config)
+                        if current == stamps:
+                            continue
+                        candidate, stamps = await asyncio.to_thread(load_generation, path)
+                        if canonical(candidate) != fingerprint:
+                            break
+                    except (OSError, ValueError, KeyError, TypeError) as error:
+                        failure = error
+                        break
+            finally:
+                generation_stop.set()
+                await asyncio.wait_for(worker, 10)
+            if failure is not None:
+                status = LocalStatus(
+                    config,
+                    {
+                        "processing": "lidar-processing",
+                        "uplink": "measurement-uplink",
+                        "orchestrator": "edge-orchestrator",
+                    }[role],
+                )
+                status.reason = "CONFIGURATION_STATE_INVALID"
+                status.write("FATAL")
+                raise ValueError("configuration state unavailable") from failure
+    finally:
+        stopped.cancel()
+        await asyncio.gather(stopped, return_exceptions=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Explicit v2 edge services; does not migrate v1")
-    parser.add_argument("role", choices=("processing", "uplink", "orchestrator"))
+    parser.add_argument("role", choices=("processing", "uplink", "orchestrator", "calibration-api"))
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
-    config = load_runtime(args.config)
+    config = load_runtime(args.config, apply_control=args.role != "calibration-api")
     os.umask(0o007)
 
     async def run():
-        await {"processing": processing, "uplink": uplink, "orchestrator": orchestrator}[args.role](
-            config, termination_event()
-        )
+        if args.role == "calibration-api":
+            from .calibration_api import run as control_api
+
+            await control_api(config, termination_event())
+        else:
+            await run_service(args.role, args.config, termination_event())
 
     asyncio.run(run())
 

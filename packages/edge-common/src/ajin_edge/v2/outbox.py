@@ -12,6 +12,7 @@ import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 
@@ -426,10 +427,11 @@ class Outbox:
         }
         return active, referenced
 
-    def _delete(self, mid):
+    def _delete(self, mid, *, sync=True):
         self.index[mid]["path"].unlink()
         del self.index[mid]
-        self._sync_directory()
+        if sync:
+            self._sync_directory()
 
     def _make_room(self, needed, *, exclude=(), now=None):
         self.collect(now=now)
@@ -477,7 +479,11 @@ class Outbox:
         self._save_meta()
 
     def next_ready(self, *, pin=False):
-        items = [(mid, item) for mid, item in self.index.items() if item["state"] == "pending"]
+        items = [
+            (mid, item)
+            for mid, item in self.index.items()
+            if item["state"] == "pending" and mid not in self.inflight
+        ]
         if not items:
             return None
         selector = max if self.latest else min
@@ -504,11 +510,21 @@ class Outbox:
         self._change(mid, state="quarantine", reason=reason)
 
     def delivered(self, mid, received_at, *, now=None):
-        item = self.index[mid]
+        self.delivered_many([(mid, received_at)], now=now)
+
+    def delivered_many(self, receipts, *, now=None):
+        if not 1 <= len(receipts) <= 8 or len({mid for mid, _ in receipts}) != len(receipts):
+            raise ValueError("invalid bounded ACK batch")
+        items = {mid: self.index[mid] for mid, _ in receipts}
+        times = [at for _, at in receipts]
+        if self.meta["last_backend_ack_at"] is not None:
+            times.append(self.meta["last_backend_ack_at"])
+        newest = max(times, key=datetime.fromisoformat)
         previous = deepcopy(self.meta)
         try:
-            self.meta["last_backend_ack_at"] = received_at
-            self.meta["receipts"][mid] = {"digest": item["digest"]}
+            self.meta["last_backend_ack_at"] = newest
+            for mid, item in items.items():
+                self.meta["receipts"][mid] = {"digest": item["digest"]}
             while len(self.meta["receipts"]) > 32:
                 oldest = next(iter(self.meta["receipts"]))
                 retained = self.index.get(oldest)
@@ -527,11 +543,17 @@ class Outbox:
             raise
         # The fsynced receipt is authoritative across restart; do not rewrite
         # a large protected scan for every successful HTTP acknowledgement.
-        item["state"] = "acked"
+        for item in items.values():
+            item["state"] = "acked"
         active, referenced = self._protected(now)
-        if not item["scans"] & (active | referenced):
-            self._delete(mid)
-        self.collect(now=now)
+        changed = False
+        for mid, item in items.items():
+            if not item["scans"] & (active | referenced):
+                self._delete(mid, sync=False)
+                changed = True
+        changed = self.collect(now=now, sync=False) or changed
+        if changed:
+            self._sync_directory()
 
     def protect(self, owner, scan_ids, *, expires_at):
         if not owner or len(owner) > 128 or len(scan_ids) > 32:
@@ -546,7 +568,7 @@ class Outbox:
         self._save_meta()
         self.collect(now=now)
 
-    def collect(self, *, now=None):
+    def collect(self, *, now=None, sync=True):
         current = time.time() if now is None else now
         expired = [
             owner for owner, lease in self.meta["leases"].items() if lease["expires_at"] <= current
@@ -556,13 +578,18 @@ class Outbox:
                 del self.meta["leases"][owner]
             self._save_meta()
         active, referenced = self._protected(now)
+        changed = False
         for mid, item in list(self.index.items()):
             if (
                 mid not in self.inflight
                 and item["state"] == "acked"
                 and not item["scans"] & (active | referenced)
             ):
-                self._delete(mid)
+                self._delete(mid, sync=False)
+                changed = True
+        if changed and sync:
+            self._sync_directory()
+        return changed
 
     def stats(self):
         pending = [item for item in self.index.values() if item["state"] == "pending"]
