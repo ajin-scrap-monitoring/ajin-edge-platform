@@ -379,3 +379,18 @@ def test_control_state_filename_cannot_collide_with_lock_or_cleanup(tmp_path, na
     base["configuration_state_file"] = str(Path(base["control_dir"]) / name)
     with pytest.raises(ValueError):
         control_module().ControlState(base)
+
+
+async def test_missing_previously_initialized_state_cannot_reset_active_calibration(tmp_path):
+    from pathlib import Path
+
+    module = control_module()
+    base = base_runtime(tmp_path)
+    with module.ControlState(base) as state:
+        state.propose(calibration_request(base), "request-1")
+        delivery = Delivery()
+        delivery.acked = True
+        await state.advance(delivery)
+    Path(base["configuration_state_file"]).unlink()
+    with pytest.raises(ValueError, match="missing"):
+        module.ControlState(base)

@@ -158,9 +158,17 @@ class ControlState:
                 fcntl.flock(self.lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             for temporary in self.path.parent.glob(".calibration.*.tmp"):
                 temporary.unlink()
+            marker = self.path.parent / ".calibration-initialized"
+            if marker.exists() and not self.path.exists():
+                raise ValueError("previously initialized calibration state is missing")
             if self.path.exists():
                 self.state = read_state(base)
+                if not marker.exists():
+                    self._mark_initialized(marker, base)
             else:
+                # Fail closed after any interrupted first installation as well as
+                # later state loss; never silently reset version/request history.
+                self._mark_initialized(marker, base)
                 cfg = deepcopy(base["configuration"])
                 self.state = {}
                 self._commit(
@@ -181,6 +189,19 @@ class ControlState:
         except BaseException:
             self.close()
             raise
+
+    @staticmethod
+    def _mark_initialized(marker, base):
+        with marker.open("xb") as file:
+            file.write(baseline_digest(base).encode("ascii"))
+            file.flush()
+            os.fsync(file.fileno())
+        if os.name != "nt":
+            descriptor = os.open(marker.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
 
     def close(self):
         self.lock.close()

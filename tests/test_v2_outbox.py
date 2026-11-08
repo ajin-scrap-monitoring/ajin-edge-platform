@@ -169,3 +169,25 @@ def test_failed_ack_persistence_does_not_publish_a_false_receipt(tmp_path, monke
         assert store.get(body["message_id"])["state"] == "pending"
     with Outbox(tmp_path) as store:
         assert not store.inspect(body["message_id"])["remote_acked"]
+
+
+def test_ack_rotation_at_full_protected_capacity_remains_durable(tmp_path):
+    bodies = []
+    with Outbox(tmp_path, limit_bytes=262144, reserve_bytes=16384) as store:
+        first = message()
+        store.protect("live", [first["sensors"][0]["scan"]["scan_id"]], expires_at=10**12)
+        for _ in range(100):
+            body = message()
+            try:
+                store.enqueue(body)
+                bodies.append(body)
+            except CapacityError:
+                break
+        assert len(bodies) > 32
+        for body in bodies:
+            store.delivered(body["message_id"], "2026-09-20T01:00:00Z")
+    with Outbox(tmp_path, limit_bytes=262144, reserve_bytes=16384) as store:
+        assert store.next_ready() is None
+        assert all(store.inspect(b["message_id"])["remote_acked"] for b in bodies)
+        store.release("live")
+        assert not store.index

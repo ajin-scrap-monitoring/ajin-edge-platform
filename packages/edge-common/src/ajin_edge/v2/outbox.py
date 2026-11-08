@@ -194,6 +194,8 @@ class Outbox:
 
     def _index(self, path, record):
         payload = record["payload"]
+        if path.name.endswith(".acked.record"):
+            record = {**record, "state": "acked"}
         receipt = self.meta["receipts"].get(payload["message_id"])
         if receipt is not None:
             if receipt["digest"] != record["digest"]:
@@ -217,7 +219,9 @@ class Outbox:
         if item is None:
             return None
         record = json.loads(item["path"].read_bytes())
-        if record["state"] == "pending" and message_id in self.meta["receipts"]:
+        if record["state"] == "pending" and (
+            message_id in self.meta["receipts"] or item["path"].name.endswith(".acked.record")
+        ):
             record["state"] = "acked"
         return record
 
@@ -503,8 +507,9 @@ class Outbox:
         self._make_room(self._allocation(len(canonical(record))), exclude=(mid,), now=now)
         if mid not in self.index:
             raise CapacityError("record evicted during update")
-        self._atomic(self._path(mid), record)
-        self._index(self._path(mid), record)
+        path = self.index[mid]["path"]
+        self._atomic(path, record)
+        self._index(path, record)
 
     def quarantine(self, mid, reason):
         self._change(mid, state="quarantine", reason=reason)
@@ -529,13 +534,16 @@ class Outbox:
                 oldest = next(iter(self.meta["receipts"]))
                 retained = self.index.get(oldest)
                 if retained is not None:
-                    # Only a receipt leaving the bounded journal needs its ACK
-                    # embedded in the retained body before we forget that receipt.
-                    record = json.loads(retained["path"].read_bytes())
-                    if record["state"] == "pending":
-                        record["state"] = "acked"
-                        self._atomic(retained["path"], record)
-                        self._index(retained["path"], record)
+                    # The old receipt already durably proves this ACK. Rename
+                    # the immutable body to carry that state without allocating
+                    # a second body at full protected capacity. Sync the rename
+                    # before removing the receipt. Both crash orders retain proof.
+                    path = retained["path"]
+                    if not path.name.endswith(".acked.record"):
+                        target = path.with_suffix(".acked.record")
+                        os.replace(path, target)
+                        self._sync_directory()
+                        retained.update(path=target, state="acked")
                 del self.meta["receipts"][oldest]
             self._save_meta()
         except BaseException:

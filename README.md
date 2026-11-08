@@ -15,6 +15,7 @@ ROS 없이 공식 SLAMTEC SDK와 Python을 사용한다. 측정 백엔드·DB·�
 - [백엔드·영상 연동 계약](docs/BACKEND_CONTRACT.md)
 - [검증 기록](docs/VALIDATION.md)
 - [설계 결정과 한계](docs/IMPLEMENTATION_DECISIONS.md)
+- [Pi 라이다 보정 수신 API](docs/CALIBRATION_API.md)
 
 ## 실제 디렉터리
 
