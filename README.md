@@ -16,6 +16,7 @@ ROS 없이 공식 SLAMTEC SDK와 Python을 사용한다. 측정 백엔드·DB·�
 - [검증 기록](docs/VALIDATION.md)
 - [설계 결정과 한계](docs/IMPLEMENTATION_DECISIONS.md)
 - [Pi 라이다 보정 수신 API](docs/CALIBRATION_API.md)
+- [Pi 설치·단면·곡선·가중치 통합 설정 API](docs/CONFIGURATION_API.md)
 - [Pi 주기·보정 API 검증과 지연 한계](docs/PI_PIPELINE_CALIBRATION_VALIDATION_2026-11-08.md)
 
 ## 실제 디렉터리

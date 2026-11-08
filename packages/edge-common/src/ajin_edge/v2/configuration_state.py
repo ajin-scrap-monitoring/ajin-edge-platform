@@ -16,13 +16,14 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from .auxiliary_storage import auxiliary_bytes
-from .calibration_schema import CALIBRATION_REQUEST_SCHEMA
+from .calibration_schema import CALIBRATION_REQUEST_SCHEMA, CONFIGURATION_REQUEST_SCHEMA
 from .contracts import validate_message
 from .processing import canonical, identifier, utc_now
 
 MAX_STATE_BYTES = 128 * 1024
 STATUS_BUDGET = 1024 * 1024
 REQUEST_VALIDATOR = Draft202012Validator(CALIBRATION_REQUEST_SCHEMA)
+CONFIGURATION_REQUEST_VALIDATOR = Draft202012Validator(CONFIGURATION_REQUEST_SCHEMA)
 
 
 class ControlError(ValueError):
@@ -59,7 +60,7 @@ def immutable_registration(registration):
     result = {
         k: v
         for k, v in registration.items()
-        if k not in ("message_id", "generated_at", "config_revision")
+        if k not in ("message_id", "generated_at", "config_revision", "judgment")
     }
     result["sensors"] = [
         {k: v for k, v in s.items() if k != "calibration"} for s in registration["sensors"]
@@ -309,14 +310,28 @@ class ControlState:
         return job
 
     def propose(self, request, request_id):
+        return self._propose(request, request_id, REQUEST_VALIDATOR, "INVALID_CALIBRATION_REQUEST")
+
+    def propose_configuration(self, request, request_id):
+        return self._propose(
+            request, request_id, CONFIGURATION_REQUEST_VALIDATOR, "INVALID_CONFIGURATION_REQUEST"
+        )
+
+    def snapshot_configuration(self):
+        return {
+            **self.snapshot(),
+            "judgment": deepcopy(self.state["active_registration"].get("judgment")),
+        }
+
+    def _propose(self, request, request_id, validator, invalid_request):
         identifier(request_id)
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", request_id):
             raise ControlError("INVALID_IDEMPOTENCY_KEY")
         try:
             canonical(request)
-            REQUEST_VALIDATOR.validate(request)
+            validator.validate(request)
         except (ValueError, ValidationError) as error:
-            raise ControlError("INVALID_CALIBRATION_REQUEST") from error
+            raise ControlError(invalid_request) from error
         request_hash = digest(request)
         key = digest(request_id)
         old = self.state["request_digests"].get(key)
@@ -345,17 +360,26 @@ class ControlState:
             config_revision=request["config_revision"],
         )
         sensors = {s["sensor_id"]: s for s in candidate["sensors"]}
-        updates = request["calibrations"]
+        updates = request.get("calibrations", [])
         if len({s["sensor_id"] for s in updates}) != len(updates):
             raise ControlError("DUPLICATE_SENSOR")
         for update in updates:
             if update["sensor_id"] not in sensors:
                 raise ControlError("UNREGISTERED_SENSOR")
             sensors[update["sensor_id"]]["calibration"] = deepcopy(update["calibration"])
+        if "judgment" in request:
+            if request["judgment"] is None:
+                candidate.pop("judgment", None)
+            else:
+                candidate["judgment"] = deepcopy(request["judgment"])
         try:
             validate_message(candidate)
         except ValueError as error:
-            raise ControlError("INVALID_CALIBRATION") from error
+            raise ControlError(
+                "INVALID_CONFIGURATION"
+                if validator is CONFIGURATION_REQUEST_VALIDATOR
+                else "INVALID_CALIBRATION"
+            ) from error
         if candidate["config_revision"] in self.state["revision_digests"]:
             raise ControlConflict("CONFIGURATION_VERSION_REUSED")
         calibrations = self._calibration_hashes(candidate)

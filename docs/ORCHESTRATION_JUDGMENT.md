@@ -63,7 +63,8 @@ fusion.method는 `CALIBRATED_WEIGHTED_SECTIONS`다. 두 component 각각에 sens
 ```
 
 기본 동일 가중치·기본 보정곡선은 없다. 설치와 적재 상태별 검증으로 설정을 정한다.
-judgment, 각 센서 보정과 fusion이 모두 VERIFIED여야 종합 수치를 제공한다.
+설치 보정은 VERIFIED여야 좌표를 사용한다. judgment와 fusion은 VERIFIED 또는 DEFAULT이면 계산한다.
+DEFAULT는 기본 설정의 추정치이며 LIMITED·DEFAULT_SETTINGS로 구분한다. UNVERIFIED는 계산 보류를 유지한다.
 두 단면으로 전체 부피를 정확히 복원한다고 주장하지 않는다. 예시의 0.25/0.75와 항등 곡선은 합성 시험값이다.
 
 ## 백엔드 전달 형식
@@ -93,6 +94,7 @@ judgment, 각 센서 보정과 fusion이 모두 VERIFIED여야 종합 수치를 
 | A/B 시간 불일치·다른 시계 | 각각 계산 가능 | null, SENSOR_TIME_MISMATCH |
 | 종합 설정 없음·미검증 | 각각 계산 가능 | null, FILL_FUSION_NOT_CONFIGURED / FILL_FUSION_NOT_VALIDATED |
 | 전체 판단 설정 미검증 | 모두 보류 | null, FILL_METHOD_NOT_VALIDATED |
+| 기본 판단·종합 설정 DEFAULT | 조건을 만족한 단면 계산 | 계산 가능 시 추정값, LIMITED와 DEFAULT_SETTINGS |
 | 계산 중 입력 만료 | 결과 보류 | null, INPUT_EXPIRED_DURING_JUDGMENT |
 
 유효 개별 단면만 있으면 전체 decision_state는 LIMITED이며 둘 다 계산 불가하면 UNAVAILABLE이다.

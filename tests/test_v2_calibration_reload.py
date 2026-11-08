@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import grpc
 import httpx
+import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from ajin_edge.v2 import runtime
 from ajin_edge.v2.contracts import validate_message
@@ -42,7 +43,10 @@ async def test_configuration_replacement_during_startup_cannot_leave_an_old_gene
     assert seen == ["new"]
 
 
-async def test_http_calibration_ack_reloads_services_and_produces_verified_z(tmp_path, monkeypatch):
+@pytest.mark.parametrize("all_settings", [False, True], ids=["installation", "all-settings"])
+async def test_http_calibration_ack_reloads_services_and_produces_verified_z(
+    tmp_path, monkeypatch, all_settings
+):
     assert hasattr(runtime, "run_service"), "managed configuration reload is missing"
     from ajin_edge.v2.calibration_api import create_app
 
@@ -159,9 +163,30 @@ async def test_http_calibration_ack_reloads_services_and_produces_verified_z(tmp
                         "Authorization": "Bearer " + "x" * 40,
                         "Idempotency-Key": "live-reload",
                     }
+                    payload = calibration_request(base)
+                    route, jobs = "calibrations", "calibration-jobs"
+                    if all_settings:
+                        from copy import deepcopy
+
+                        from test_v2_configuration_control import configuration_request
+
+                        payload = configuration_request(base)
+                        installation = payload["calibrations"][0]["calibration"]
+                        installation.update(
+                            rotation=[[1, 0, 0], [0, 0, -1], [0, 1, 0]], translation_mm=[0, 0, 0]
+                        )
+                        payload["calibrations"].append(
+                            {"sensor_id": "lidar-b", "calibration": deepcopy(installation)}
+                        )
+                        for section in payload["judgment"]["sections"]:
+                            section.update(floor_z_mm=[0], ceiling_z_mm=[2000], active_bins=[True])
+                        components = payload["judgment"]["fusion"]["components"]
+                        components[0].update(weight=0.4, calibration=[[0, 0], [0.5, 0.4], [1, 1]])
+                        components[1]["weight"] = 0.6
+                        route, jobs = "configuration", "configuration-jobs"
                     response = await client.put(
-                        "/api/control/v1/calibrations",
-                        json=calibration_request(base),
+                        f"/api/control/v1/{route}",
+                        json=payload,
                         headers=headers,
                     )
                     assert response.status == 202
@@ -171,24 +196,38 @@ async def test_http_calibration_ack_reloads_services_and_produces_verified_z(tmp
                             if task.done():
                                 await task
                         response = await client.get(
-                            "/api/control/v1/calibration-jobs/live-reload", headers=headers
+                            f"/api/control/v1/{jobs}/live-reload", headers=headers
                         )
                         final = await response.json()
                         active = [
                             b
                             for b in received
                             if b["message_type"] == "lidar_measurement"
+                            and b["delivery_kind"] == "PERIODIC"
                             and b["config_revision"] == "cal-update-1"
                             and all(s["scan"] is not None for s in b["sensors"])
                         ]
-                        if final["state"] == "APPLIED" and active:
+                        estimates = [b for b in received if b.get("fill_estimate") is not None]
+                        if (
+                            final["state"] == "APPLIED"
+                            and active
+                            and (not all_settings or estimates)
+                        ):
                             break
                         await asyncio.sleep(0.05)
                     assert final["state"] == "APPLIED"
                     assert active
                     sensors = {s["sensor_id"]: s for s in active[-1]["sensors"]}
                     assert sensors["lidar-a"]["scan"]["points"][0]["position_mm"]["z"] == 1000
-                    assert sensors["lidar-b"]["scan"]["points"][0]["position_mm"] is None
+                    if all_settings:
+                        assert sensors["lidar-b"]["scan"]["points"][0]["position_mm"]["z"] == 1000
+                        assert estimates[0]["fill_estimate"]["ratio"] == pytest.approx(
+                            0.46, abs=0.001
+                        )
+                        assert estimates[0]["decision_state"] == "LIMITED"
+                        assert "DEFAULT_SETTINGS" in estimates[0]["reason_codes"]
+                    else:
+                        assert sensors["lidar-b"]["scan"]["points"][0]["position_mm"] is None
                     registered = [b for b in received if b["message_type"] == "edge_configuration"]
                     assert any(b["config_revision"] == "cal-update-1" for b in registered)
                     local_status = json.loads(

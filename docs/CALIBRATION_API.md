@@ -3,6 +3,8 @@
 이 API는 엣지 플랫폼이 제공한다. 설치 보정을 전달하는 호출자는 백엔드 설정 수신 API와 구분하여
 Pi의 제어 API를 호출한다. 카메라 미디어 서비스의 API가 아니다.
 
+이 문서는 설치 보정 전용 경로다. 단면·곡선·가중치까지 변경하는 [통합 설정 API](CONFIGURATION_API.md)도 제공한다.
+
 ## 요청
 
 `PUT /api/control/v1/calibrations`

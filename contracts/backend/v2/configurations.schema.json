@@ -212,7 +212,8 @@
             "verification_state": {
               "enum": [
                 "VERIFIED",
-                "UNVERIFIED"
+                "UNVERIFIED",
+                "DEFAULT"
               ]
             },
             "sections": {
@@ -394,7 +395,8 @@
                     "verification_state": {
                       "enum": [
                         "VERIFIED",
-                        "UNVERIFIED"
+                        "UNVERIFIED",
+                        "DEFAULT"
                       ]
                     },
                     "components": {

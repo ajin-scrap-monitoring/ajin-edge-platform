@@ -3,6 +3,7 @@
 from copy import deepcopy
 
 from .contracts import CONFIGURATION_SCHEMA, ID, array, obj
+from .judgment_schema import INDEPENDENT_JUDGMENT_SCHEMA
 
 CALIBRATION = deepcopy(
     CONFIGURATION_SCHEMA["properties"]["sensors"]["items"]["properties"]["calibration"]["anyOf"][0]
@@ -29,3 +30,18 @@ CALIBRATION_REQUEST_SCHEMA = obj(
         ),
     }
 )
+
+CONFIGURATION_REQUEST_SCHEMA = obj(
+    {
+        **deepcopy(CALIBRATION_REQUEST_SCHEMA["properties"]),
+        "judgment": {"anyOf": [deepcopy(INDEPENDENT_JUDGMENT_SCHEMA), {"type": "null"}]},
+    }
+)
+CONFIGURATION_REQUEST_SCHEMA["required"] = [
+    "site_id",
+    "edge_id",
+    "base_config_revision",
+    "config_revision",
+    "coordinate_frame_id",
+]
+CONFIGURATION_REQUEST_SCHEMA["anyOf"] = [{"required": ["calibrations"]}, {"required": ["judgment"]}]

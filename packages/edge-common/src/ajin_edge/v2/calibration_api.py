@@ -14,10 +14,12 @@ from ajin_edge.transport import read_token
 
 from .configuration_state import ControlError, ControlState
 from .ipc import OPTIONS, DeliveryStub
+from .settings_defaults import default_settings
 
 TASK = web.AppKey("calibration_worker", asyncio.Task)
 ERROR = web.AppKey("calibration_error", dict)
 BODY_LIMIT = 32 * 1024
+CONFIGURATION_BODY_LIMIT = 128 * 1024
 
 
 def listener(config):
@@ -93,7 +95,7 @@ def create_app(control, delivery, token_file):
             active_requests -= 1
 
     app = web.Application(
-        client_max_size=BODY_LIMIT,
+        client_max_size=CONFIGURATION_BODY_LIMIT,
         middlewares=[authenticated],
         handler_args={
             "auto_decompress": False,
@@ -109,18 +111,36 @@ def create_app(control, delivery, token_file):
         return web.json_response(control.snapshot())
 
     async def put_calibrations(request):
+        return await put_settings(request, BODY_LIMIT, control.propose)
+
+    async def put_configuration(request):
+        return await put_settings(request, CONFIGURATION_BODY_LIMIT, control.propose_configuration)
+
+    async def get_configuration(request):
+        return web.json_response(control.snapshot_configuration())
+
+    async def get_defaults(request):
+        try:
+            profile = default_settings(control.state["active_registration"])
+        except ValueError as error:
+            raise ControlError("DEFAULT_PROFILE_UNAVAILABLE", 404) from error
+        return web.json_response(profile)
+
+    async def put_settings(request, limit, submit):
         if request.content_type != "application/json":
             raise ControlError("JSON_REQUIRED", 415)
         if request.headers.get("Content-Encoding", "identity").lower() != "identity":
             raise ControlError("CONTENT_ENCODING_UNSUPPORTED", 415)
-        if request.content_length is not None and request.content_length > BODY_LIMIT:
+        if request.content_length is not None and request.content_length > limit:
             raise ControlError("BODY_TOO_LARGE", 413)
         async with asyncio.timeout(5):
             body = await request.read()
+        if len(body) > limit:
+            raise ControlError("BODY_TOO_LARGE", 413)
         request_id = request.headers.get("Idempotency-Key")
         if request_id is None:
             raise ControlError("IDEMPOTENCY_KEY_REQUIRED")
-        reply = control.propose(strict_json(body), request_id)
+        reply = submit(strict_json(body), request_id)
         return web.json_response(
             {"accepted": True, **reply}, status=200 if reply["state"] == "APPLIED" else 202
         )
@@ -136,6 +156,10 @@ def create_app(control, delivery, token_file):
             web.get("/api/control/v1/calibrations", get_calibrations),
             web.put("/api/control/v1/calibrations", put_calibrations),
             web.get("/api/control/v1/calibration-jobs/{job_id}", get_job),
+            web.get("/api/control/v1/configuration", get_configuration),
+            web.put("/api/control/v1/configuration", put_configuration),
+            web.get("/api/control/v1/configuration/defaults", get_defaults),
+            web.get("/api/control/v1/configuration-jobs/{job_id}", get_job),
         ]
     )
 

@@ -1,0 +1,408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "site_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "edge_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "base_config_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "config_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "coordinate_frame_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "calibrations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sensor_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "calibration": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "verification_state": {
+                "enum": [
+                  "VERIFIED",
+                  "UNVERIFIED"
+                ]
+              },
+              "angle_sign": {
+                "enum": [
+                  -1,
+                  1
+                ]
+              },
+              "angle_zero_offset_mdeg": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "rotation": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "minimum": -1.00000001,
+                    "maximum": 1.00000001
+                  },
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "translation_mm": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "minimum": -1000000000000000.0,
+                  "maximum": 1000000000000000.0
+                },
+                "minItems": 3,
+                "maxItems": 3
+              }
+            },
+            "required": [
+              "version",
+              "verification_state",
+              "angle_sign",
+              "angle_zero_offset_mdeg",
+              "rotation",
+              "translation_mm"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "sensor_id",
+          "calibration"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "judgment": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "model_type": {
+              "enum": [
+                "INDEPENDENT_SECTIONS_V1"
+              ]
+            },
+            "method_version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "verification_state": {
+              "enum": [
+                "VERIFIED",
+                "UNVERIFIED",
+                "DEFAULT"
+              ]
+            },
+            "sections": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "sensor_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "origin_xy_mm": {
+                    "type": "array",
+                    "items": {
+                      "type": "number",
+                      "minimum": -1000000000.0,
+                      "maximum": 1000000000.0
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "axis_xy": {
+                    "type": "array",
+                    "items": {
+                      "type": "number",
+                      "minimum": -1,
+                      "maximum": 1
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "bin_width_mm": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000000
+                  },
+                  "floor_z_mm": {
+                    "type": "array",
+                    "items": {
+                      "type": "number",
+                      "minimum": -1000000000.0,
+                      "maximum": 1000000000.0
+                    },
+                    "minItems": 1,
+                    "maxItems": 512
+                  },
+                  "ceiling_z_mm": {
+                    "type": "array",
+                    "items": {
+                      "type": "number",
+                      "minimum": -1000000000.0,
+                      "maximum": 1000000000.0
+                    },
+                    "minItems": 1,
+                    "maxItems": 512
+                  },
+                  "active_bins": {
+                    "type": "array",
+                    "items": {
+                      "type": "boolean"
+                    },
+                    "minItems": 1,
+                    "maxItems": 512
+                  },
+                  "filters": {
+                    "type": "object",
+                    "properties": {
+                      "quality_min": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 255
+                      },
+                      "distance_min_mm": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1073741823
+                      },
+                      "distance_max_mm": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1073741823
+                      },
+                      "height_margin_mm": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000000
+                      },
+                      "spatial_radius_bins": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 5
+                      },
+                      "spatial_max_deviation_mm": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1000000000.0
+                      }
+                    },
+                    "required": [
+                      "quality_min",
+                      "distance_min_mm",
+                      "distance_max_mm",
+                      "height_margin_mm",
+                      "spatial_radius_bins",
+                      "spatial_max_deviation_mm"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "max_interpolation_gap_bins": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10
+                  }
+                },
+                "required": [
+                  "sensor_id",
+                  "origin_xy_mm",
+                  "axis_xy",
+                  "bin_width_mm",
+                  "floor_z_mm",
+                  "ceiling_z_mm",
+                  "active_bins",
+                  "filters",
+                  "max_interpolation_gap_bins"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "window": {
+              "type": "object",
+              "properties": {
+                "scan_count": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8
+                },
+                "min_scans": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8
+                },
+                "max_age_ms": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000
+                },
+                "pair_tolerance_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                }
+              },
+              "required": [
+                "scan_count",
+                "min_scans",
+                "max_age_ms",
+                "pair_tolerance_ms"
+              ],
+              "additionalProperties": false
+            },
+            "fusion": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "method": {
+                      "enum": [
+                        "CALIBRATED_WEIGHTED_SECTIONS"
+                      ]
+                    },
+                    "version": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "verification_state": {
+                      "enum": [
+                        "VERIFIED",
+                        "UNVERIFIED",
+                        "DEFAULT"
+                      ]
+                    },
+                    "components": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "sensor_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "weight": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                          },
+                          "calibration": {
+                            "type": "array",
+                            "items": {
+                              "type": "array",
+                              "items": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "minItems": 2,
+                              "maxItems": 2
+                            },
+                            "minItems": 2,
+                            "maxItems": 128
+                          }
+                        },
+                        "required": [
+                          "sensor_id",
+                          "weight",
+                          "calibration"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "required": [
+                    "method",
+                    "version",
+                    "verification_state",
+                    "components"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "model_type",
+            "method_version",
+            "verification_state",
+            "sections",
+            "window",
+            "fusion"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "site_id",
+    "edge_id",
+    "base_config_revision",
+    "config_revision",
+    "coordinate_frame_id"
+  ],
+  "additionalProperties": false,
+  "anyOf": [
+    {
+      "required": [
+        "calibrations"
+      ]
+    },
+    {
+      "required": [
+        "judgment"
+      ]
+    }
+  ]
+}
