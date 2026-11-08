@@ -162,7 +162,11 @@ class ControlState:
             if marker.exists() and not self.path.exists():
                 raise ValueError("previously initialized calibration state is missing")
             if self.path.exists():
-                self.state = read_state(base)
+                recovered = read_state(base)
+                # A prior process may have renamed this file before a failed
+                # directory barrier. Reconfirm durability before certifying it.
+                self._sync_directory(self.path.parent)
+                self.state = recovered
                 if not marker.exists():
                     self._mark_initialized(marker, base)
             else:
@@ -239,15 +243,19 @@ class ControlState:
                 file.flush()
                 os.fsync(file.fileno())
             os.replace(temporary, self.path)
+            self._sync_directory(self.path.parent)
             self.state = state
-            if os.name != "nt":
-                descriptor = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
         finally:
             Path(temporary).unlink(missing_ok=True)
+
+    @staticmethod
+    def _sync_directory(path):
+        if os.name != "nt":
+            descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
 
     def snapshot(self):
         cfg = self.state["active_registration"]

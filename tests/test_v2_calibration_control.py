@@ -394,3 +394,58 @@ async def test_missing_previously_initialized_state_cannot_reset_active_calibrat
     Path(base["configuration_state_file"]).unlink()
     with pytest.raises(ValueError, match="missing"):
         module.ControlState(base)
+
+
+async def test_directory_sync_failure_cannot_publish_or_recover_an_applied_job(
+    tmp_path, monkeypatch
+):
+    module = control_module()
+    base = base_runtime(tmp_path)
+    state = module.ControlState(base)
+    state.propose(calibration_request(base), "request-1")
+    delivery = Delivery()
+    delivery.acked = True
+    real_sync = getattr(module.ControlState, "_sync_directory", None)
+    assert real_sync is not None, "controller recovery needs a directory durability barrier"
+
+    def failed_barrier(path):
+        raise OSError("directory fsync unavailable")
+
+    monkeypatch.setattr(module.ControlState, "_sync_directory", staticmethod(failed_barrier))
+    try:
+        with pytest.raises(OSError):
+            await state.advance(delivery)
+        assert state.snapshot()["config_revision"] == base["configuration"]["config_revision"]
+        assert state.job("request-1")["state"] == "PENDING_BACKEND_ACK"
+    finally:
+        state.close()
+    with pytest.raises(OSError):
+        module.ControlState(base)
+    monkeypatch.setattr(module.ControlState, "_sync_directory", staticmethod(real_sync))
+    with module.ControlState(base) as recovered:
+        assert recovered.snapshot()["config_revision"] == "cal-update-1"
+        mark_applied(recovered, base)
+        assert recovered.job("request-1")["state"] == "APPLIED"
+
+
+async def test_failed_proposal_directory_barrier_cannot_dispatch_configuration(
+    tmp_path, monkeypatch
+):
+    module = control_module()
+    base = base_runtime(tmp_path)
+    with module.ControlState(base) as state:
+        real_sync = state._sync_directory
+
+        def failed_barrier(path):
+            raise OSError("directory fsync unavailable")
+
+        monkeypatch.setattr(module.ControlState, "_sync_directory", staticmethod(failed_barrier))
+        with pytest.raises(OSError):
+            state.propose(calibration_request(base), "request-1")
+        delivery = Delivery()
+        await state.advance(delivery)
+        assert not delivery.messages and state.state["pending"] is None
+        monkeypatch.setattr(module.ControlState, "_sync_directory", staticmethod(real_sync))
+        assert (
+            state.propose(calibration_request(base), "request-1")["state"] == "PENDING_BACKEND_ACK"
+        )
