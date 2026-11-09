@@ -246,15 +246,19 @@ async def run_edge_stream(
                 if websocket is not None:
                     await _close_maybe_awaitable(websocket)
     finally:
-        capture_task.cancel()
-        stats_task.cancel()
-        loop_task.cancel()
         tasks = [capture_task, stats_task, loop_task]
         if status_task is not None:
-            status_task.cancel()
             tasks.append(status_task)
-        await asyncio.gather(*tasks, return_exceptions=True)
-        await _shutdown_capture_executor(capture_executor)
+        cleanup = asyncio.create_task(_drain_stream_workers(tasks, capture_executor))
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        await cleanup
+        if cancelled:
+            raise asyncio.CancelledError
 
 
 async def async_main(
@@ -352,6 +356,17 @@ async def _shutdown_capture_executor(executor: ThreadPoolExecutor) -> None:
         raise asyncio.CancelledError
 
 
+async def _drain_stream_workers(
+    tasks: list[asyncio.Task[Any]], executor: ThreadPoolExecutor
+) -> None:
+    for task in tasks:
+        task.cancel()
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        await _shutdown_capture_executor(executor)
+
+
 async def _capture_supervisor(
     capture: CaptureBoundary,
     slot: LatestFrameSlot,
@@ -382,12 +397,14 @@ async def _capture_in_worker(
 ) -> None:
     loop = asyncio.get_running_loop()
     while True:
-        published, duration, completed = await loop.run_in_executor(
+        published, duration, completed, error = await loop.run_in_executor(
             executor, timed_capture, capture.publish_next, slot
         )
         if stats is not None:
             stats.diagnostics.observe("capture_native", duration)
             stats.diagnostics.observe("capture_resume", time.monotonic() - completed)
+        if error is not None:
+            raise error
         if published:
             if stats is not None:
                 latest = slot.latest()

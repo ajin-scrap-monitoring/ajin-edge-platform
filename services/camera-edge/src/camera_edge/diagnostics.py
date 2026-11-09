@@ -98,11 +98,16 @@ class Diagnostics:
         }
 
 
-def timed_capture(publish_next: Any, slot: Any) -> tuple[bool, float, float]:
+def timed_capture(publish_next: Any, slot: Any) -> tuple[bool, float, float, Exception | None]:
     start = time.monotonic()
-    result = publish_next(slot)
+    error = None
+    try:
+        result = publish_next(slot)
+    except Exception as failure:
+        result = False
+        error = failure
     completed = time.monotonic()
-    return result, completed - start, completed
+    return result, completed - start, completed, error
 
 
 async def observe_loop(diagnostics: Diagnostics) -> None:
