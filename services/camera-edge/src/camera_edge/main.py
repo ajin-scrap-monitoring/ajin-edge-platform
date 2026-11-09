@@ -12,6 +12,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from .diagnostics import (
+    Diagnostics,
+    StatusPublisher,
+    configure_logging,
+    observe_loop,
+    timed_capture,
+)
 from .ingest import Backoff, LatestFrameSlot, PyAvMjpegCaptureAdapter, Settings, WssPublisher
 from .status import CameraStatusWriter
 
@@ -51,6 +58,9 @@ class StreamStats:
     last_sent_at: float | None = None
     camera_state: str = "starting"
     websocket_state: str = "disconnected"
+    diagnostics: Diagnostics = field(default_factory=Diagnostics)
+    selected_generation_skips: int = 0
+    last_capture_at: float | None = None
 
     def record_capture(self, frame_size: int) -> None:
         self.capture_frames += 1
@@ -60,7 +70,10 @@ class StreamStats:
     def record_send(self, frame_size: int) -> None:
         self.sent_frames += 1
         self.sent_bytes += frame_size
-        self.last_sent_at = time.monotonic()
+        now = time.monotonic()
+        if self.last_sent_at is not None:
+            self.diagnostics.observe("send_interval", now - self.last_sent_at)
+        self.last_sent_at = now
 
     def snapshot(self) -> dict[str, Any]:
         elapsed = max(time.monotonic() - self.started_at, 0.001)
@@ -78,6 +91,8 @@ class StreamStats:
             "websocket_state": self.websocket_state,
             "capture_restarts": self.capture_restarts,
             "network_retries": self.network_retries,
+            "selected_generation_skips": self.selected_generation_skips,
+            "diagnostics": self.diagnostics.snapshot(),
             "last_send_age_seconds": (
                 None
                 if self.last_sent_at is None
@@ -154,6 +169,8 @@ async def run_edge_stream(
         jitter=random.random,
     )
     stats = StreamStats()
+    status_publisher = StatusPublisher(status_writer, stats.diagnostics) if status_writer else None
+    loop_task = asyncio.create_task(observe_loop(stats.diagnostics))
     capture_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="camera-capture")
     capture_task = asyncio.create_task(
         _capture_supervisor(
@@ -168,7 +185,7 @@ async def run_edge_stream(
     )
     stats_task = asyncio.create_task(_periodic_stats(settings, stats, stats_sleep))
     status_task = (
-        asyncio.create_task(_periodic_status(stats, status_writer)) if status_writer else None
+        asyncio.create_task(_periodic_status(stats, status_publisher)) if status_publisher else None
     )
 
     try:
@@ -190,11 +207,17 @@ async def run_edge_stream(
                     )
                     if newer is None:
                         continue
-                    generation, frame = newer
-                    sent = await asyncio.wait_for(
-                        publisher.publish_once(frame, websocket),
-                        timeout=settings.ws_send_timeout_seconds,
-                    )
+                    next_generation, frame = newer
+                    stats.selected_generation_skips += max(0, next_generation - generation - 1)
+                    generation = next_generation
+                    send_started = time.monotonic()
+                    try:
+                        sent = await asyncio.wait_for(
+                            publisher.publish_once(frame, websocket),
+                            timeout=settings.ws_send_timeout_seconds,
+                        )
+                    finally:
+                        stats.diagnostics.observe("send_await", time.monotonic() - send_started)
                     if sent:
                         stats.record_send(len(frame))
                         stats.camera_state = "streaming"
@@ -209,7 +232,8 @@ async def run_edge_stream(
             except Exception as error:
                 if _is_fatal_authentication_error(error):
                     stats.websocket_state = "fatal"
-                    _write_status(stats, status_writer)
+                    if status_publisher:
+                        await status_publisher.write(stats.snapshot())
                     _log_wss_state(settings.camera_id, "fatal", "authentication")
                     raise FatalAuthenticationError("WSS authentication failed") from error
                 stats.network_retries += 1
@@ -224,7 +248,8 @@ async def run_edge_stream(
     finally:
         capture_task.cancel()
         stats_task.cancel()
-        tasks = [capture_task, stats_task]
+        loop_task.cancel()
+        tasks = [capture_task, stats_task, loop_task]
         if status_task is not None:
             status_task.cancel()
             tasks.append(status_task)
@@ -286,7 +311,14 @@ async def async_main(
 
 
 def main() -> None:
-    asyncio.run(async_main())
+    previous = (list(LOGGER.handlers), LOGGER.level, LOGGER.propagate)
+    try:
+        configure_logging()
+        asyncio.run(async_main())
+    finally:
+        LOGGER.handlers[:] = previous[0]
+        LOGGER.setLevel(previous[1])
+        LOGGER.propagate = previous[2]
 
 
 async def _close_maybe_awaitable(target: Any) -> None:
@@ -350,12 +382,22 @@ async def _capture_in_worker(
 ) -> None:
     loop = asyncio.get_running_loop()
     while True:
-        published = await loop.run_in_executor(executor, capture.publish_next, slot)
+        published, duration, completed = await loop.run_in_executor(
+            executor, timed_capture, capture.publish_next, slot
+        )
+        if stats is not None:
+            stats.diagnostics.observe("capture_native", duration)
+            stats.diagnostics.observe("capture_resume", time.monotonic() - completed)
         if published:
             if stats is not None:
                 latest = slot.latest()
                 if latest is not None:
                     stats.record_capture(len(latest[1]))
+                    if stats.last_capture_at is not None:
+                        stats.diagnostics.observe(
+                            "capture_interval", completed - stats.last_capture_at
+                        )
+                    stats.last_capture_at = completed
         else:
             await asyncio.sleep(EMPTY_CAPTURE_RETRY_DELAY_SECONDS)
 
@@ -368,20 +410,12 @@ async def _periodic_stats(
     while True:
         await sleep(settings.stats_interval_seconds)
         _log_stats(settings.stats_interval_seconds, stats, camera_id=settings.camera_id)
+        stats.diagnostics.reset_window()
 
 
-def _write_status(stats: StreamStats, writer: CameraStatusWriter | None) -> None:
-    if writer is not None:
-        try:
-            writer.update(stats.snapshot())
-        except OSError:
-            # Control-plane disk failure must not interrupt the binary JPEG stream.
-            LOGGER.warning("edge_status_write_failed")
-
-
-async def _periodic_status(stats: StreamStats, writer: CameraStatusWriter) -> None:
+async def _periodic_status(stats: StreamStats, writer: StatusPublisher) -> None:
     while True:
-        _write_status(stats, writer)
+        await writer.write(stats.snapshot())
         await asyncio.sleep(5)
 
 

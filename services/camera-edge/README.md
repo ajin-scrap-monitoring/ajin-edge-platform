@@ -38,6 +38,39 @@ uv run ruff format --check .
   - stats interval `60`
   - `LOG_FORMAT=json`
 
+## Producer diagnostics
+
+The entrypoint emits payload-free JSON logs: `edge_stats` every configured stats
+interval and `edge_stage_delay` when a stage takes at least 0.5 seconds (at most
+one warning per stage per 30 seconds). `at` is the UTC observation time, not an
+original camera exposure timestamp. Tokens, transport URLs, JPEG data and raw
+exception text are excluded.
+
+`diagnostics` contains `count`, `total_seconds`, and `max_seconds` per stage for
+the current stats window. Status-file reads do not reset it; each periodic stats
+log closes the window. Frame and byte counters remain cumulative. Stages are:
+
+- `capture_native`: native device read and JPEG validation/publication in the worker.
+- `capture_resume`: worker completion to event-loop resumption.
+- `capture_interval`: consecutive successful native capture completions.
+- `send_await`: publish await duration, including transport backpressure and loop scheduling;
+  it is not a network RTT or proof of delivery at the receiver.
+- `send_interval`: consecutive successful send completions, including reconnect waits.
+- `loop_lag`: scheduling delay relative to a 100 ms heartbeat.
+- `status_write`: complete atomic status-file update including filesystem synchronization.
+
+`selected_generation_skips` counts latest-slot generations replaced before send
+selection within a connection. It excludes generations present at connection
+establishment and does not measure original camera frame loss. No frame identity
+or source exposure timestamp is added to the binary protocol.
+
+Status writes run outside the streaming event loop, with one serialized writer.
+Shutdown waits for an in-progress write, including after repeated cancellation;
+an unresponsive filesystem can therefore delay graceful shutdown. The status
+snapshot reflects observation before writing, rather than completion of disk I/O.
+Simulator publication, bridge delivery and media receipt must be correlated
+separately to attribute a delay outside this process.
+
 ## Out of scope
 
 - Browser protocol choice
