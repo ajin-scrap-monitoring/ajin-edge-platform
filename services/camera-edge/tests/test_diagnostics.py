@@ -97,10 +97,26 @@ async def test_periodic_and_fatal_status_writes_are_serialized():
 def test_capture_worker_reports_native_finish_separately_from_loop_resume():
     from camera_edge.diagnostics import timed_capture
 
-    result, duration, completed = timed_capture(lambda slot: True, object())
+    result, duration, completed, error = timed_capture(lambda slot: True, object())
     assert result is True
     assert duration >= 0
     assert completed > 0
+    assert error is None
+
+
+def test_failed_capture_retains_native_duration_and_original_error(monkeypatch):
+    from camera_edge import diagnostics
+
+    times = iter((10.0, 11.5))
+    error = OSError("unlogged device details")
+
+    def fail(slot):
+        raise error
+
+    monkeypatch.setattr(diagnostics.time, "monotonic", lambda: next(times))
+    published, duration, completed, failure = diagnostics.timed_capture(fail, object())
+    assert not published
+    assert (duration, completed, failure) == (1.5, 11.5, error)
 
 
 @pytest.mark.asyncio
@@ -177,3 +193,57 @@ def test_delay_warning_is_bounded_per_stage(caplog):
         diagnostic.observe("capture_native", 1.0)
     assert len(caplog.records) == 1
     assert diagnostic.snapshot()["capture_native_count"] == 100
+
+
+@pytest.mark.asyncio
+async def test_repeated_stream_cancel_drains_capture_after_status_is_released():
+    from test_task_5 import Connector, settings
+
+    from camera_edge.ingest import LatestFrameSlot, WssPublisher
+    from camera_edge.main import run_edge_stream
+
+    capture_started = threading.Event()
+    status_started = threading.Event()
+    release_capture = threading.Event()
+    release_status = threading.Event()
+    status_completed = threading.Event()
+
+    class Capture:
+        def publish_next(self, slot):
+            capture_started.set()
+            release_capture.wait(3)
+            return False
+
+    class Writer:
+        def update(self, snapshot):
+            status_started.set()
+            release_status.wait(3)
+            status_completed.set()
+
+    task = asyncio.create_task(
+        run_edge_stream(
+            settings(),
+            slot=LatestFrameSlot(),
+            capture=Capture(),
+            publisher=WssPublisher(),
+            connect=Connector(),
+            status_writer=Writer(),
+        )
+    )
+    try:
+        assert await asyncio.to_thread(capture_started.wait, 1)
+        assert await asyncio.to_thread(status_started.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        release_status.set()
+        assert await asyncio.to_thread(status_completed.wait, 1)
+        # Drain ready callbacks; native capture still owns the camera.
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release_capture.set()
+        release_status.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
