@@ -131,3 +131,35 @@ def test_directory_sync_failure_after_replace_keeps_actual_allocation(tmp_path, 
             with pytest.raises(OSError):
                 store.quarantine(body["message_id"], "SCHEMA_REJECTED")
         assert store.used_bytes() == actual_usage(tmp_path)
+
+
+def test_ack_rename_stat_failure_keeps_body_reachable_and_retryable(tmp_path, monkeypatch):
+    bodies = [message() for _ in range(33)]
+    with Outbox(tmp_path) as store:
+        store.protect("live", [bodies[0]["sensors"][0]["scan"]["scan_id"]], expires_at=10**12)
+        for body in bodies:
+            store.enqueue(body)
+        for body in bodies[:32]:
+            store.delivered(body["message_id"], "2026-11-10T00:00:00Z")
+        stat = Path.stat
+        failed = False
+
+        def fail_once(path, *args, **kwargs):
+            nonlocal failed
+            if path.name.endswith(".acked.record") and not failed:
+                failed = True
+                raise OSError("temporary allocation inspection failure")
+            return stat(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "stat", fail_once)
+            with pytest.raises(OSError):
+                store.delivered(bodies[-1]["message_id"], "2026-11-10T00:00:00Z")
+        assert store.index[bodies[0]["message_id"]]["path"].exists(), (
+            "the renamed ACK body must stay reachable after allocation inspection fails"
+        )
+        assert store.get(bodies[0]["message_id"])["payload"] == bodies[0]
+        store.delivered(bodies[-1]["message_id"], "2026-11-10T00:00:00Z")
+        assert store.used_bytes() == actual_usage(tmp_path)
+    with Outbox(tmp_path) as store:
+        assert all(store.inspect(body["message_id"])["remote_acked"] for body in bodies)
