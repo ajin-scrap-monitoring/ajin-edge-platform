@@ -64,10 +64,12 @@ EVIDENCE/PERIODIC/STATE별 요청 수, ACK 지연, DB 잠금 대기와 Pi 대기
 
 ## 연동 형식과 전달 정보
 
-기존 [백엔드 연동 규격](BACKEND_CONTRACT.md),
-[v2 OpenAPI](../contracts/backend/v2/openapi.json),
+기준 규격은 [v2 OpenAPI](../contracts/backend/v2/openapi.json)와
 [measurement 스키마](../contracts/backend/v2/measurements.schema.json),
-[assessment 스키마](../contracts/backend/v2/assessments.schema.json)를 유지한다.
+[assessment 스키마](../contracts/backend/v2/assessments.schema.json)다.
+구현 범위는 [v2 구현 설명](V2_IMPLEMENTATION.md)을 참고한다.
+v2 ACK는 message_id·received_at·accepted·duplicate를 사용하며,
+200 중복 ACK와409 내용 충돌을 구분한다.
 
 원본 measurement의 각도·거리·획득 시각·점별 world XYZ와,
 STATE의 `section_profiles[].profile.bins[].height_mm`·단면·종합 결과는 역할이 다르다.
