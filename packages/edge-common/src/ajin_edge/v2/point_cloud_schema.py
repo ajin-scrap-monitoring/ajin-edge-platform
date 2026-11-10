@@ -128,6 +128,12 @@ CLOUD_SCHEMA = obj(
 
 
 def validate_settings(settings):
+    if any(
+        type(settings[key]) is not int
+        for key, schema in SETTINGS_SCHEMA["properties"].items()
+        if schema.get("type") == "integer"
+    ):
+        raise ValueError("point cloud integer settings must be JSON integers")
     if settings["distance_min_mm"] > settings["distance_max_mm"] or (
         settings["spatial_radius_points"]
         and settings["spatial_min_neighbors"] > 2 * settings["spatial_radius_points"]

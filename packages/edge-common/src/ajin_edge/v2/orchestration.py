@@ -210,17 +210,20 @@ class Orchestrator:
                 for sensor in self.config["sensors"]:
                     history = histories[sensor["sensor_id"]]
                     cloud = point_cloud.build_cloud(self.config, sensor, history, now_ns=now_ns)
-                    if not fixed_clock and any(
-                        time.monotonic_ns() - int(o["scan"]["acquired_monotonic_ns"])
-                        > model["window"]["max_age_ms"] * 1000000
-                        for o in history
-                    ):
-                        point_cloud.invalidate_expired(cloud)
                     clouds.append(cloud)
                     required_ids = {r["scan_id"] for r in cloud["source_scans"]}
                     for o in history:
                         if o["scan"]["scan_id"] in required_ids:
                             by_reference[tuple(self.reference(o).values())] = o
+                if not fixed_clock:
+                    completed_ns = time.monotonic_ns()
+                    for cloud in clouds:
+                        if any(
+                            completed_ns - int(o["scan"]["acquired_monotonic_ns"])
+                            > model["window"]["max_age_ms"] * 1000000
+                            for o in histories[cloud["sensor_id"]]
+                        ):
+                            point_cloud.invalidate_expired(cloud)
                 used = list(by_reference.values())
                 if used:
                     stamps = [o["scan"]["acquired_at"] for o in used]

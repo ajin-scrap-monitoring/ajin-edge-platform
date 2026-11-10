@@ -95,6 +95,26 @@ def test_cloud_delay_expires_cloud_only_without_erasing_already_evaluated_sectio
     validate_message(body)
 
 
+def test_first_sensor_cloud_is_rechecked_when_second_sensor_finishes(monkeypatch):
+    from ajin_edge.v2 import orchestration, point_cloud
+
+    _, orch, _ = populated()
+    clock = [1000000000]
+    monkeypatch.setattr(orchestration.time, "monotonic_ns", lambda: clock[0])
+    original = point_cloud.build_cloud
+
+    def delayed(configuration, sensor, observations, **kwargs):
+        result = original(configuration, sensor, observations, **kwargs)
+        clock[0] = 1700000000 if sensor["sensor_id"] == "lidar-a" else 2000000000
+        return result
+
+    monkeypatch.setattr(point_cloud, "build_cloud", delayed)
+    body = orch.assessment()
+    assert all(c["valid_point_count"] == 0 for c in body["filtered_point_clouds"])
+    assert body["fill_estimate"] is not None
+    validate_message(body)
+
+
 def test_eight_scan_history_still_fits_existing_durable_bundle_limit(tmp_path):
     _, orch, _ = populated(count=8)
     bundle = orch.assessment_bundle(now_ns=1000000000)
@@ -144,6 +164,9 @@ def test_wire_rejects_numeric_unverified_cloud_even_when_marked_limited():
         ("distance_min_mm", 40000),
         ("processing_version", "unknown"),
         ("enabled", "yes"),
+        ("spatial_radius_points", 2.0),
+        ("spatial_min_neighbors", 3.0),
+        ("quality_min", 10.0),
     ],
 )
 def test_invalid_filter_configuration_is_rejected(field, value):
