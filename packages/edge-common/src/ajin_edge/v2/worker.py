@@ -36,59 +36,96 @@ class DeliveryWorker:
             and now - self.last_status_attempt >= 1
             and not self.previous_was_status
         )
-        rows = []
-        try:
-            for _ in range(4 - int(use_status)):
-                row = await self.store.call("next_ready", pin=True)
+        rows = {}
+        tasks = {}
+        sent = 0
+        stopped = False
+        reasons, progress, retries = [], [], []
+
+        def dispatch(payload, is_status):
+            nonlocal sent
+            tasks[asyncio.create_task(self.transport.send(payload))] = (payload, is_status)
+            sent += 1
+
+        async def refill():
+            # Keep four network slots. A finite turn also services token rotation,
+            # status fairness and shutdown without retaining an unbounded batch.
+            while len(tasks) < 4 and sent < 16 and not stopped and self.clock() - started < 1:
+                selected = asyncio.create_task(self.store.call("next_ready", pin=True))
+                try:
+                    row = await asyncio.shield(selected)
+                except asyncio.CancelledError:
+                    # A running executor operation cannot be cancelled. Account
+                    # for its selected pin before the outer cleanup releases it.
+                    row = await selected
+                    if row is not None:
+                        rows[row["payload"]["message_id"]] = row
+                    raise
                 if row is None:
                     break
-                rows.append(row)
-            if not rows and status is not None:
-                use_status = True
-            payloads = ([status] if use_status else []) + [r["payload"] for r in rows]
-            if not payloads:
-                return False
-            self.previous_was_status = use_status
+                rows[row["payload"]["message_id"]] = row
+                dispatch(row["payload"], False)
+
+        try:
             if use_status:
                 self.last_status_attempt = now
-            # Bound network work and memory; each request retains its own body,
-            # idempotency key and storage ACK. Arrival order was never guaranteed.
-            results = await asyncio.gather(
-                *(self.transport.send(p) for p in payloads), return_exceptions=True
-            )
-            for result in results:
-                if isinstance(result, BaseException):
-                    raise result
-            acknowledgements = []
-            progress = []
-            retries = []
-            reasons = []
-            for index, (payload, result) in enumerate(zip(payloads, results, strict=True)):
-                is_status = use_status and index == 0
-                if result.reason:
-                    reasons.append(result.reason)
-                if result.kind == "accepted":
-                    progress.append(result.received_at)
+                dispatch(status, True)
+            await refill()
+            if not tasks and status is not None:
+                use_status = True
+                self.last_status_attempt = now
+                dispatch(status, True)
+            if not tasks:
+                return False
+            self.previous_was_status = use_status
+            while tasks:
+                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                acknowledgements, completed, errors = [], [], []
+                for task in done:
+                    payload, is_status = tasks.pop(task)
                     if not is_status:
-                        acknowledgements.append((payload["message_id"], result.received_at))
-                elif result.kind == "auth":
-                    self.blocked_token = self.transport.token
-                elif result.kind == "configuration":
-                    self.configuration_blocked = True
-                elif result.kind == "quarantine":
-                    if not is_status:
-                        await self.store.call("quarantine", payload["message_id"], result.reason)
-                else:
-                    retries.append(result.retry_after)
-                if (
-                    is_status
-                    and result.kind in ("accepted", "quarantine")
-                    and self.latest_status.get("payload", {}).get("message_id")
-                    == payload["message_id"]
-                ):
-                    self.latest_status.clear()
-            if acknowledgements:
-                await self.store.call("delivered_many", acknowledgements)
+                        completed.append(payload["message_id"])
+                    try:
+                        result = task.result()
+                    except BaseException as error:
+                        errors.append(error)
+                        stopped = True
+                        continue
+                    if result.reason:
+                        reasons.append(result.reason)
+                    if result.kind == "accepted":
+                        progress.append(result.received_at)
+                        if not is_status:
+                            acknowledgements.append((payload["message_id"], result.received_at))
+                    elif result.kind == "auth":
+                        self.blocked_token = self.transport.token
+                        stopped = True
+                    elif result.kind == "configuration":
+                        self.configuration_blocked = True
+                        stopped = True
+                    elif result.kind == "quarantine":
+                        if not is_status:
+                            await self.store.call(
+                                "quarantine", payload["message_id"], result.reason
+                            )
+                    else:
+                        retries.append(result.retry_after)
+                        stopped = True
+                    if (
+                        is_status
+                        and result.kind in ("accepted", "quarantine")
+                        and self.latest_status.get("payload", {}).get("message_id")
+                        == payload["message_id"]
+                    ):
+                        self.latest_status.clear()
+                if acknowledgements:
+                    await self.store.call("delivered_many", acknowledgements)
+                for mid in completed:
+                    await self.store.call("unpin", mid)
+                    del rows[mid]
+                if errors:
+                    raise errors[0]
+                await refill()
             self.reason = reasons[0] if reasons else ""
             if progress:
                 self.last_progress_at = max(
@@ -101,6 +138,9 @@ class DeliveryWorker:
             else:
                 self.backoff.success()
         finally:
-            for row in rows:
-                await self.store.call("unpin", row["payload"]["message_id"])
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for mid in rows:
+                await self.store.call("unpin", mid)
         return True

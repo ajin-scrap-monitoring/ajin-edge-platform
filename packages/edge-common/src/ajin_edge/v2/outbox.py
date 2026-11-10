@@ -71,6 +71,9 @@ class Outbox:
         self.index = {}
         self.inflight = set()
         self.executor = None
+        self._file_allocations = {}
+        self._allocated_bytes = 0
+        self._usage_valid = False
         try:
             if (self.root / "metadata.json").exists():
                 self.meta = json.loads((self.root / "metadata.json").read_bytes())
@@ -140,12 +143,44 @@ class Outbox:
         return self._spool_bytes() + self.external_usage()
 
     def _spool_bytes(self):
-        total = 0
-        for path in self.root.iterdir():
-            if path.is_file():
-                stat = path.stat()
-                total += max(self._allocation(stat.st_size), getattr(stat, "st_blocks", 0) * 512)
-        return total
+        if not self._usage_valid:
+            self._audit_usage()
+        return self._allocated_bytes
+
+    def _audit_usage(self):
+        """Reconcile at startup/reporting, never enumerate the spool on every write."""
+        self._usage_valid = False
+        allocations = {}
+        with os.scandir(self.root) as entries:
+            for entry in entries:
+                if entry.is_file():
+                    path = Path(entry.path)
+                    # Windows directory-entry sizes can lag an open file's
+                    # flushed writes; inspect the file itself for quota checks.
+                    info = path.stat()
+                    allocations[path] = max(
+                        self._allocation(info.st_size), getattr(info, "st_blocks", 0) * 512
+                    )
+        self._file_allocations = allocations
+        self._allocated_bytes = sum(allocations.values())
+        self._usage_valid = True
+
+    def _track_allocation(self, path):
+        try:
+            info = path.stat()
+            amount = max(self._allocation(info.st_size), getattr(info, "st_blocks", 0) * 512)
+        except FileNotFoundError:
+            amount = 0
+        except OSError:
+            self._usage_valid = False
+            raise
+        previous = self._file_allocations.pop(path, 0)
+        self._allocated_bytes += amount - previous
+        if amount:
+            self._file_allocations[path] = amount
+
+    def _forget_allocation(self, path):
+        self._allocated_bytes -= self._file_allocations.pop(path, 0)
 
     def _sync_directory(self):
         if os.name != "nt":
@@ -171,11 +206,19 @@ class Outbox:
                 file.write(data)
                 file.flush()
                 os.fsync(file.fileno())
+            self._track_allocation(temporary)
+            if self._spool_bytes() > ceiling:
+                raise CapacityError("physical temporary allocation exceeds reservation")
             os.replace(temporary, path)
+            self._forget_allocation(temporary)
+            self._track_allocation(path)
             if sync:
                 self._sync_directory()
         finally:
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.unlink(missing_ok=True)
+            finally:
+                self._track_allocation(temporary)
 
     def _save_meta(self):
         if self._allocation(len(canonical(self.meta))) * 2 > self.reserve:
@@ -477,7 +520,9 @@ class Outbox:
         return active, referenced
 
     def _delete(self, mid, *, sync=True):
-        self.index[mid]["path"].unlink()
+        path = self.index[mid]["path"]
+        path.unlink()
+        self._forget_allocation(path)
         del self.index[mid]
         if sync:
             self._sync_directory()
@@ -535,9 +580,13 @@ class Outbox:
         ]
         if not items:
             return None
-        selector = max if self.latest else min
-        mid, _ = selector(items, key=lambda pair: pair[1]["order"])
-        self.latest = not self.latest
+        configurations = [pair for pair in items if pair[1]["kind"] == "edge_configuration"]
+        if configurations:
+            mid, _ = min(configurations, key=lambda pair: pair[1]["order"])
+        else:
+            selector = max if self.latest else min
+            mid, _ = selector(items, key=lambda pair: pair[1]["order"])
+            self.latest = not self.latest
         if pin:
             self.inflight.add(mid)
         return self.get(mid)
@@ -587,7 +636,11 @@ class Outbox:
                     if not path.name.endswith(".acked.record"):
                         target = path.with_suffix(".acked.record")
                         os.replace(path, target)
+                        # The filesystem move has happened even if inspecting
+                        # its allocation fails; keep retries pointed at the body.
                         retained.update(path=target, state="acked")
+                        self._forget_allocation(path)
+                        self._track_allocation(target)
                     self._sync_directory()
                 del self.meta["receipts"][oldest]
             self._save_meta()
@@ -645,6 +698,7 @@ class Outbox:
         return changed
 
     def stats(self):
+        self._audit_usage()
         pending = [item for item in self.index.values() if item["state"] == "pending"]
         return {
             "pending_messages": len(pending),
