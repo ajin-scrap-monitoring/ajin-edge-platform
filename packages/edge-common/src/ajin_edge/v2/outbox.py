@@ -636,9 +636,11 @@ class Outbox:
                     if not path.name.endswith(".acked.record"):
                         target = path.with_suffix(".acked.record")
                         os.replace(path, target)
+                        # The filesystem move has happened even if inspecting
+                        # its allocation fails; keep retries pointed at the body.
+                        retained.update(path=target, state="acked")
                         self._forget_allocation(path)
                         self._track_allocation(target)
-                        retained.update(path=target, state="acked")
                     self._sync_directory()
                 del self.meta["receipts"][oldest]
             self._save_meta()
