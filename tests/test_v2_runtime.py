@@ -1,7 +1,7 @@
 import grpc
 import pytest
 from ajin_edge.v2.ipc import DeliveryStub, ObservationBroker, serve_delivery
-from ajin_edge.v2.outbox import Outbox
+from ajin_edge.v2.outbox import CapacityError, Outbox
 from ajin_edge.v2.transport import Result
 from ajin_edge.v2.worker import DeliveryWorker
 from test_v2_contracts import message
@@ -101,7 +101,12 @@ async def test_inflight_message_survives_concurrent_capacity_eviction(tmp_path, 
                     return Result("retry", "NETWORK_OR_TIMEOUT")
                 for _ in range(20):
                     # Concurrent producers use the same single writer as delivery.
-                    await store.call("enqueue", message())
+                    try:
+                        await store.call("enqueue", message())
+                    except CapacityError:
+                        # Background input can be rejected at the physical limit;
+                        # the already in-flight target must remain protected.
+                        pass
                 return Result(outcome, reason="SCHEMA_REJECTED", received_at="2026-09-20T01:00:00Z")
 
         await DeliveryWorker(store, Transport()).step(now=0)
