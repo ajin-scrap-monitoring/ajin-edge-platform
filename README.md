@@ -13,6 +13,8 @@ ROS 없이 공식 SLAMTEC SDK와 Python을 사용한다. 측정 백엔드·DB·�
 - [전체 아키텍처와 남은 구성 요소](docs/ARCHITECTURE.md)
 - [배포·장애 복구·현장 인수](docs/OPERATIONS.md)
 - [백엔드·영상 연동 계약](docs/BACKEND_CONTRACT.md)
+- [전체 점별 필터 XYZ 수신 규격·합성 JSON 예제](docs/FILTERED_POINT_CLOUD_CONTRACT.md)
+- [점별 XYZ의 Pi Docker·실제 입력 검증](docs/FILTERED_POINT_CLOUD_VALIDATION_2026-11-10.md)
 - [검증 기록](docs/VALIDATION.md)
 - [설계 결정과 한계](docs/IMPLEMENTATION_DECISIONS.md)
 - [Pi 라이다 보정 수신 API](docs/CALIBRATION_API.md)

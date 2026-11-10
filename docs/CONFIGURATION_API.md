@@ -26,6 +26,7 @@ PUT에는 `Content-Type: application/json`, `Idempotency-Key: <요청 식별자>
 | calibrations[].sensor_id / calibration | 등록된 A/B 중 하나 또는 둘의 설치 보정 |
 | judgment.sections[] | 센서별 원점·축·bin 폭·바닥·상한·활성 마스크·필터·보간 한도 |
 | judgment.window | 시간 중앙값 스캔 수·최소 스캔·입력 만료·A/B 시간 정합 한도 |
+| judgment.point_cloud | 선택 범위 전체 점별 필터 XYZ 활성화·품질·거리·공간·각도 대응 설정. [수신 규격](FILTERED_POINT_CLOUD_CONTRACT.md) 참조 |
 | judgment.fusion.components[].calibration | 단면 면적비→종합 입력값 보정곡선 |
 | judgment.fusion.components[].weight | 센서별 종합 가중치 |
 
