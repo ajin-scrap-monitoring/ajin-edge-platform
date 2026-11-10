@@ -2,6 +2,10 @@
 
 이 문서는 구현한 클라이언트의 **합의 제안**이다. 실제 서버 endpoint와 인증정책 합의는 미완료다.
 
+v2의 선택 확장 `STATE.filtered_point_clouds`는 [전체 점별 필터 XYZ 규격](FILTERED_POINT_CLOUD_CONTRACT.md)을 따른다.
+원본 점과 대표 높이를 유지하며, 이 확장의 수신 수용 확인 전에는 새 필드를 보내지 않는다.
+아래 v1 측정 형식·64KiB 제한을 v2의 신규 STATE 크기 제한으로 적용하지 않는다.
+
 ## 측정 수신
 
 `POST <MEASUREMENT_URL>` (HTTPS, 인증서 검증 필수)

@@ -1,0 +1,465 @@
+{
+  "schema_version": "2.0",
+  "message_type": "edge_assessment",
+  "message_id": "00000000-0000-4000-8000-000000000002",
+  "site_id": "site-test",
+  "edge_id": "edge-test",
+  "config_revision": "synthetic-filtered-cloud-v1",
+  "generated_at": "2026-11-10T00:00:01Z",
+  "assessment_type": "STATE",
+  "assessment_id": "00000000-0000-4000-8000-000000000003",
+  "revision": 1,
+  "observed_from": "2026-09-20T00:00:00.800000+00:00",
+  "observed_to": "2026-09-20T00:00:01+00:00",
+  "rule_version": "synthetic-sections-v2",
+  "decision_state": "AVAILABLE",
+  "reason_codes": [],
+  "fill_state": "AVAILABLE",
+  "fill_estimate": {
+    "ratio": 0.4249859638669685,
+    "method_version": "synthetic-fusion-v1"
+  },
+  "event": null,
+  "capabilities": {
+    "fill": "ENABLED",
+    "occlusion": "NOT_IMPLEMENTED",
+    "collection": "NOT_IMPLEMENTED",
+    "vision": "NOT_IMPLEMENTED"
+  },
+  "evidence": {
+    "scans": [
+      {
+        "scan_id": "lidar-a-1",
+        "sensor_id": "lidar-a",
+        "config_revision": "synthetic-filtered-cloud-v1",
+        "calibration_version": "cal-test",
+        "coordinate_frame_id": "frame-test"
+      },
+      {
+        "scan_id": "lidar-a-2",
+        "sensor_id": "lidar-a",
+        "config_revision": "synthetic-filtered-cloud-v1",
+        "calibration_version": "cal-test",
+        "coordinate_frame_id": "frame-test"
+      },
+      {
+        "scan_id": "lidar-a-3",
+        "sensor_id": "lidar-a",
+        "config_revision": "synthetic-filtered-cloud-v1",
+        "calibration_version": "cal-test",
+        "coordinate_frame_id": "frame-test"
+      },
+      {
+        "scan_id": "lidar-b-1",
+        "sensor_id": "lidar-b",
+        "config_revision": "synthetic-filtered-cloud-v1",
+        "calibration_version": "cal-test",
+        "coordinate_frame_id": "frame-test"
+      },
+      {
+        "scan_id": "lidar-b-2",
+        "sensor_id": "lidar-b",
+        "config_revision": "synthetic-filtered-cloud-v1",
+        "calibration_version": "cal-test",
+        "coordinate_frame_id": "frame-test"
+      },
+      {
+        "scan_id": "lidar-b-3",
+        "sensor_id": "lidar-b",
+        "config_revision": "synthetic-filtered-cloud-v1",
+        "calibration_version": "cal-test",
+        "coordinate_frame_id": "frame-test"
+      }
+    ],
+    "vision_observations": []
+  },
+  "section_profiles": [
+    {
+      "sensor_id": "lidar-a",
+      "state": "AVAILABLE",
+      "reason_codes": [],
+      "profile": {
+        "coordinate_frame_id": "frame-test",
+        "origin_xy_mm": [
+          1000,
+          0
+        ],
+        "axis_xy": [
+          1,
+          0
+        ],
+        "plane_origin_mm": [
+          500,
+          2500,
+          10000
+        ],
+        "plane_normal": [
+          0.0,
+          0.9745551866148997,
+          -0.22414769292142694
+        ],
+        "area_basis": "VERTICAL_PROJECTION",
+        "bin_width_mm": 1000,
+        "bins": [
+          {
+            "index": 0,
+            "floor_z_mm": 0,
+            "ceiling_z_mm": 10000,
+            "height_mm": 1999.58126714613,
+            "source": "OBSERVED",
+            "sensor_ids": [
+              "lidar-a"
+            ]
+          },
+          {
+            "index": 1,
+            "floor_z_mm": 0,
+            "ceiling_z_mm": 10000,
+            "height_mm": 2000.0100578679103,
+            "source": "OBSERVED",
+            "sensor_ids": [
+              "lidar-a"
+            ]
+          },
+          {
+            "index": 2,
+            "floor_z_mm": 0,
+            "ceiling_z_mm": 10000,
+            "height_mm": 1999.8827653311155,
+            "source": "OBSERVED",
+            "sensor_ids": [
+              "lidar-a"
+            ]
+          }
+        ],
+        "area_mm2": 5999474.090345155,
+        "capacity_area_mm2": 30000000,
+        "area_ratio": 0.19998246967817185,
+        "coverage_ratio": 1.0,
+        "sensor_stats": [
+          {
+            "sensor_id": "lidar-a",
+            "scan_count": 3,
+            "input_points": 9,
+            "retained_points": 9,
+            "spatial_rejected_bins": 0
+          }
+        ]
+      }
+    },
+    {
+      "sensor_id": "lidar-b",
+      "state": "AVAILABLE",
+      "reason_codes": [],
+      "profile": {
+        "coordinate_frame_id": "frame-test",
+        "origin_xy_mm": [
+          0,
+          1000
+        ],
+        "axis_xy": [
+          0,
+          1
+        ],
+        "plane_origin_mm": [
+          2300,
+          3900,
+          10000
+        ],
+        "plane_normal": [
+          -0.9889363528682975,
+          -0.0,
+          -0.14834045293024462
+        ],
+        "area_basis": "VERTICAL_PROJECTION",
+        "bin_width_mm": 1000,
+        "bins": [
+          {
+            "index": 0,
+            "floor_z_mm": 0,
+            "ceiling_z_mm": 10000,
+            "height_mm": 4999.679783081755,
+            "source": "OBSERVED",
+            "sensor_ids": [
+              "lidar-b"
+            ]
+          },
+          {
+            "index": 1,
+            "floor_z_mm": 0,
+            "ceiling_z_mm": 10000,
+            "height_mm": 5000.1916714233885,
+            "source": "OBSERVED",
+            "sensor_ids": [
+              "lidar-b"
+            ]
+          },
+          {
+            "index": 2,
+            "floor_z_mm": 0,
+            "ceiling_z_mm": 10000,
+            "height_mm": 4999.74240339188,
+            "source": "OBSERVED",
+            "sensor_ids": [
+              "lidar-b"
+            ]
+          }
+        ],
+        "area_mm2": 14999613.857897025,
+        "capacity_area_mm2": 30000000,
+        "area_ratio": 0.49998712859656746,
+        "coverage_ratio": 1.0,
+        "sensor_stats": [
+          {
+            "sensor_id": "lidar-b",
+            "scan_count": 3,
+            "input_points": 9,
+            "retained_points": 9,
+            "spatial_rejected_bins": 0
+          }
+        ]
+      }
+    }
+  ],
+  "fusion_result": {
+    "method": "CALIBRATED_WEIGHTED_SECTIONS",
+    "model_version": "synthetic-fusion-v1",
+    "ratio": 0.4249859638669685,
+    "components": [
+      {
+        "sensor_id": "lidar-a",
+        "weight": 0.25,
+        "section_ratio": 0.19998246967817185,
+        "anchor_scan_id": "lidar-a-3",
+        "calibrated_ratio": 0.19998246967817185
+      },
+      {
+        "sensor_id": "lidar-b",
+        "weight": 0.75,
+        "section_ratio": 0.49998712859656746,
+        "anchor_scan_id": "lidar-b-3",
+        "calibrated_ratio": 0.49998712859656746
+      }
+    ],
+    "pair_delta_ms": 0.0,
+    "clock_domain_id": "boot-test"
+  },
+  "filtered_point_clouds": [
+    {
+      "sensor_id": "lidar-a",
+      "state": "AVAILABLE",
+      "reason_codes": [],
+      "coordinate_frame_id": "frame-test",
+      "calibration_version": "cal-test",
+      "verification_state": "VERIFIED",
+      "processing_version": "ANGULAR_RANGE_MEDIAN_V1",
+      "anchor": {
+        "scan_id": "lidar-a-3",
+        "stream_instance_id": "stream-test",
+        "sequence": 3,
+        "acquired_at": "2026-09-20T00:00:01+00:00",
+        "timestamp_source": "EDGE_SCAN_RECEIVED",
+        "clock_domain_id": "boot-test",
+        "acquired_monotonic_ns": "1000000000",
+        "clock_state": "UNSYNCED",
+        "clock_offset_ms": null,
+        "source_point_count": 3,
+        "selected_point_count": 3
+      },
+      "source_scans": [
+        {
+          "sensor_id": "lidar-a",
+          "scan_id": "lidar-a-1",
+          "config_revision": "synthetic-filtered-cloud-v1",
+          "calibration_version": "cal-test",
+          "coordinate_frame_id": "frame-test"
+        },
+        {
+          "sensor_id": "lidar-a",
+          "scan_id": "lidar-a-2",
+          "config_revision": "synthetic-filtered-cloud-v1",
+          "calibration_version": "cal-test",
+          "coordinate_frame_id": "frame-test"
+        },
+        {
+          "sensor_id": "lidar-a",
+          "scan_id": "lidar-a-3",
+          "config_revision": "synthetic-filtered-cloud-v1",
+          "calibration_version": "cal-test",
+          "coordinate_frame_id": "frame-test"
+        }
+      ],
+      "point_count": 3,
+      "valid_point_count": 3,
+      "point_indices": [
+        0,
+        1,
+        2
+      ],
+      "angles_mdeg": [
+        353054,
+        346307,
+        339925
+      ],
+      "xyz_mm": [
+        [
+          1500.123,
+          659.904,
+          1999.581
+        ],
+        [
+          2500.043,
+          660.002,
+          2000.01
+        ],
+        [
+          3500.004,
+          659.973,
+          1999.883
+        ]
+      ],
+      "valid": [
+        true,
+        true,
+        true
+      ],
+      "invalid_reason_codes": [
+        [],
+        [],
+        []
+      ],
+      "sample_counts": [
+        3,
+        3,
+        3
+      ],
+      "processing": {
+        "enabled": true,
+        "processing_version": "ANGULAR_RANGE_MEDIAN_V1",
+        "quality_min": 10,
+        "distance_min_mm": 1,
+        "distance_max_mm": 30000,
+        "spatial_radius_points": 2,
+        "spatial_min_neighbors": 3,
+        "spatial_max_deviation_mm": 200,
+        "spatial_neighbor_spread_mm": 100,
+        "max_adjacent_angle_gap_mdeg": 500,
+        "angle_match_tolerance_mdeg": 50,
+        "window": {
+          "scan_count": 5,
+          "min_scans": 3,
+          "max_age_ms": 1000,
+          "pair_tolerance_ms": 100
+        }
+      }
+    },
+    {
+      "sensor_id": "lidar-b",
+      "state": "AVAILABLE",
+      "reason_codes": [],
+      "coordinate_frame_id": "frame-test",
+      "calibration_version": "cal-test",
+      "verification_state": "VERIFIED",
+      "processing_version": "ANGULAR_RANGE_MEDIAN_V1",
+      "anchor": {
+        "scan_id": "lidar-b-3",
+        "stream_instance_id": "stream-test",
+        "sequence": 3,
+        "acquired_at": "2026-09-20T00:00:01+00:00",
+        "timestamp_source": "EDGE_SCAN_RECEIVED",
+        "clock_domain_id": "boot-test",
+        "acquired_monotonic_ns": "1000000000",
+        "clock_state": "UNSYNCED",
+        "clock_offset_ms": null,
+        "source_point_count": 3,
+        "selected_point_count": 3
+      },
+      "source_scans": [
+        {
+          "sensor_id": "lidar-b",
+          "scan_id": "lidar-b-1",
+          "config_revision": "synthetic-filtered-cloud-v1",
+          "calibration_version": "cal-test",
+          "coordinate_frame_id": "frame-test"
+        },
+        {
+          "sensor_id": "lidar-b",
+          "scan_id": "lidar-b-2",
+          "config_revision": "synthetic-filtered-cloud-v1",
+          "calibration_version": "cal-test",
+          "coordinate_frame_id": "frame-test"
+        },
+        {
+          "sensor_id": "lidar-b",
+          "scan_id": "lidar-b-3",
+          "config_revision": "synthetic-filtered-cloud-v1",
+          "calibration_version": "cal-test",
+          "coordinate_frame_id": "frame-test"
+        }
+      ],
+      "point_count": 3,
+      "valid_point_count": 3,
+      "point_indices": [
+        0,
+        1,
+        2
+      ],
+      "angles_mdeg": [
+        25393,
+        15478,
+        4524
+      ],
+      "xyz_mm": [
+        [
+          3050.048,
+          1499.868,
+          4999.68
+        ],
+        [
+          3049.971,
+          2500.009,
+          5000.192
+        ],
+        [
+          3050.039,
+          3499.937,
+          4999.742
+        ]
+      ],
+      "valid": [
+        true,
+        true,
+        true
+      ],
+      "invalid_reason_codes": [
+        [],
+        [],
+        []
+      ],
+      "sample_counts": [
+        3,
+        3,
+        3
+      ],
+      "processing": {
+        "enabled": true,
+        "processing_version": "ANGULAR_RANGE_MEDIAN_V1",
+        "quality_min": 10,
+        "distance_min_mm": 1,
+        "distance_max_mm": 30000,
+        "spatial_radius_points": 2,
+        "spatial_min_neighbors": 3,
+        "spatial_max_deviation_mm": 200,
+        "spatial_neighbor_spread_mm": 100,
+        "max_adjacent_angle_gap_mdeg": 500,
+        "angle_match_tolerance_mdeg": 50,
+        "window": {
+          "scan_count": 5,
+          "min_scans": 3,
+          "max_age_ms": 1000,
+          "pair_tolerance_ms": 100
+        }
+      }
+    }
+  ]
+}

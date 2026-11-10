@@ -881,6 +881,421 @@
           "type": "null"
         }
       ]
+    },
+    "filtered_point_clouds": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sensor_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "state": {
+                "enum": [
+                  "AVAILABLE",
+                  "LIMITED",
+                  "UNAVAILABLE"
+                ]
+              },
+              "reason_codes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "uniqueItems": true
+              },
+              "coordinate_frame_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "calibration_version": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "verification_state": {
+                "enum": [
+                  "VERIFIED",
+                  "UNVERIFIED",
+                  "DEFAULT"
+                ]
+              },
+              "processing_version": {
+                "enum": [
+                  "ANGULAR_RANGE_MEDIAN_V1"
+                ]
+              },
+              "anchor": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "scan_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "stream_instance_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "sequence": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "acquired_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "(Z|\\+00:00)$"
+                      },
+                      "timestamp_source": {
+                        "enum": [
+                          "EDGE_SCAN_RECEIVED"
+                        ]
+                      },
+                      "clock_domain_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "acquired_monotonic_ns": {
+                        "type": "string",
+                        "pattern": "^[0-9]{1,20}$"
+                      },
+                      "clock_state": {
+                        "enum": [
+                          "SYNCED",
+                          "DEGRADED",
+                          "UNSYNCED"
+                        ]
+                      },
+                      "clock_offset_ms": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "source_point_count": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "selected_point_count": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "scan_id",
+                      "stream_instance_id",
+                      "sequence",
+                      "acquired_at",
+                      "timestamp_source",
+                      "clock_domain_id",
+                      "acquired_monotonic_ns",
+                      "clock_state",
+                      "clock_offset_ms",
+                      "source_point_count",
+                      "selected_point_count"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "source_scans": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "scan_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "sensor_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "config_revision": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "calibration_version": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "coordinate_frame_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  },
+                  "required": [
+                    "scan_id",
+                    "sensor_id",
+                    "config_revision",
+                    "calibration_version",
+                    "coordinate_frame_id"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 8,
+                "uniqueItems": true
+              },
+              "point_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "valid_point_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "point_indices": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "angles_mdeg": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 359999
+                }
+              },
+              "xyz_mm": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "minItems": 3,
+                      "maxItems": 3
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "valid": {
+                "type": "array",
+                "items": {
+                  "type": "boolean"
+                }
+              },
+              "invalid_reason_codes": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "NO_SCAN",
+                      "SDK_INVALID_RANGE",
+                      "SOURCE_INVALID",
+                      "LOW_QUALITY",
+                      "OUT_OF_RANGE",
+                      "SPATIAL_OUTLIER",
+                      "INSUFFICIENT_HISTORY",
+                      "FILTER_UNVERIFIED",
+                      "CALIBRATION_MISSING",
+                      "CALIBRATION_UNVERIFIED",
+                      "CALIBRATION_MISMATCH",
+                      "COORDINATE_OUT_OF_RANGE",
+                      "INPUT_EXPIRED_DURING_FILTER"
+                    ]
+                  },
+                  "uniqueItems": true,
+                  "maxItems": 1
+                }
+              },
+              "sample_counts": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 8
+                }
+              },
+              "processing": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "processing_version": {
+                    "enum": [
+                      "ANGULAR_RANGE_MEDIAN_V1"
+                    ]
+                  },
+                  "quality_min": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255
+                  },
+                  "distance_min_mm": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1073741823
+                  },
+                  "distance_max_mm": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1073741823
+                  },
+                  "spatial_radius_points": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 8
+                  },
+                  "spatial_min_neighbors": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16
+                  },
+                  "spatial_max_deviation_mm": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1000000000.0
+                  },
+                  "spatial_neighbor_spread_mm": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1000000000.0
+                  },
+                  "max_adjacent_angle_gap_mdeg": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 180000
+                  },
+                  "angle_match_tolerance_mdeg": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000
+                  },
+                  "window": {
+                    "type": "object",
+                    "properties": {
+                      "scan_count": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 8
+                      },
+                      "min_scans": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 8
+                      },
+                      "max_age_ms": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000
+                      },
+                      "pair_tolerance_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100
+                      }
+                    },
+                    "required": [
+                      "scan_count",
+                      "min_scans",
+                      "max_age_ms",
+                      "pair_tolerance_ms"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "processing_version",
+                  "quality_min",
+                  "distance_min_mm",
+                  "distance_max_mm",
+                  "spatial_radius_points",
+                  "spatial_min_neighbors",
+                  "spatial_max_deviation_mm",
+                  "spatial_neighbor_spread_mm",
+                  "max_adjacent_angle_gap_mdeg",
+                  "angle_match_tolerance_mdeg",
+                  "window"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "sensor_id",
+              "state",
+              "reason_codes",
+              "coordinate_frame_id",
+              "calibration_version",
+              "verification_state",
+              "processing_version",
+              "anchor",
+              "source_scans",
+              "point_count",
+              "valid_point_count",
+              "point_indices",
+              "angles_mdeg",
+              "xyz_mm",
+              "valid",
+              "invalid_reason_codes",
+              "sample_counts",
+              "processing"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

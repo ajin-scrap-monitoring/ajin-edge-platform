@@ -9,6 +9,7 @@ from .judgment_schema import (
     SECTION_PROFILE_SCHEMA,
     SECTION_RESULT_SCHEMA,
 )
+from .point_cloud_schema import CLOUD_SCHEMA, structural_clouds, validate_clouds
 from .processing import SAFE_INT, canonical, identifier, integer, validate_configuration
 
 
@@ -177,6 +178,9 @@ ASSESSMENT_SCHEMA["properties"]["section_profiles"] = nullable(
     array(SECTION_RESULT_SCHEMA, minItems=2, maxItems=2)
 )
 ASSESSMENT_SCHEMA["properties"]["fusion_result"] = nullable(FUSION_RESULT_SCHEMA)
+ASSESSMENT_SCHEMA["properties"]["filtered_point_clouds"] = nullable(
+    array(CLOUD_SCHEMA, minItems=2, maxItems=2)
+)
 STATUS_SCHEMA = message_schema(
     "edge_status",
     {
@@ -304,6 +308,11 @@ def validate_message(payload):
                     for sensor in payload["sensors"]
                 ],
             }
+        if kind == "edge_assessment" and payload.get("filtered_point_clouds") is not None:
+            structural = {
+                **payload,
+                "filtered_point_clouds": structural_clouds(payload["filtered_point_clouds"]),
+            }
         VALIDATORS[kind].validate(structural)
         if kind == "edge_configuration":
             validate_configuration(payload)
@@ -311,6 +320,7 @@ def validate_message(payload):
             _measurement(payload)
         elif kind == "edge_assessment":
             _assessment(payload)
+            validate_clouds(payload)
         return encoded
     except (ValidationError, KeyError, TypeError, OverflowError) as error:
         raise ValueError("invalid v2 message") from error

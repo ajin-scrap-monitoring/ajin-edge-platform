@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import datetime
 from uuid import uuid4
 
+from . import point_cloud
 from .contracts import validate_message
 from .judgment import SectionJudgment, fill_enabled, is_independent
 from .processing import canonical, copy_observation, envelope, utc_now, validate_configuration
@@ -158,7 +159,13 @@ class Orchestrator:
         model = self.config.get("judgment")
         enabled = fill_enabled(model)
         body["capabilities"]["fill"] = "ENABLED" if enabled else "NOT_VALIDATED"
-        profile, reasons, used = self.judgment.calculate(now_ns)
+        cloud_enabled = is_independent(model) and point_cloud.enabled(model)
+        histories = self.judgment.snapshot(now_ns) if cloud_enabled else None
+        profile, reasons, used = (
+            self.judgment.calculate(now_ns, histories=histories)
+            if cloud_enabled
+            else self.judgment.calculate(now_ns)
+        )
         if (
             used
             and not fixed_clock
@@ -195,6 +202,35 @@ class Orchestrator:
                     "ratio": fusion["ratio"],
                     "method_version": fusion["model_version"],
                 }
+        if cloud_enabled:
+            clouds = None
+            if profile is not None:
+                clouds = []
+                by_reference = {tuple(self.reference(o).values()): o for o in used}
+                for sensor in self.config["sensors"]:
+                    history = histories[sensor["sensor_id"]]
+                    cloud = point_cloud.build_cloud(self.config, sensor, history, now_ns=now_ns)
+                    clouds.append(cloud)
+                    required_ids = {r["scan_id"] for r in cloud["source_scans"]}
+                    for o in history:
+                        if o["scan"]["scan_id"] in required_ids:
+                            by_reference[tuple(self.reference(o).values())] = o
+                if not fixed_clock:
+                    completed_ns = time.monotonic_ns()
+                    for cloud in clouds:
+                        if any(
+                            completed_ns - int(o["scan"]["acquired_monotonic_ns"])
+                            > model["window"]["max_age_ms"] * 1000000
+                            for o in histories[cloud["sensor_id"]]
+                        ):
+                            point_cloud.invalidate_expired(cloud)
+                used = list(by_reference.values())
+                if used:
+                    stamps = [o["scan"]["acquired_at"] for o in used]
+                    body["observed_from"] = min(stamps, key=datetime.fromisoformat)
+                    body["observed_to"] = max(stamps, key=datetime.fromisoformat)
+                    body["evidence"]["scans"] = [self.reference(o) for o in used]
+            body["filtered_point_clouds"] = clouds
         validate_message(body)
         return body, used
 

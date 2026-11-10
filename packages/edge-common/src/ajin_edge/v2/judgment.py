@@ -10,6 +10,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from .judgment_schema import JUDGMENT_SCHEMA
+from .point_cloud_schema import validate_settings as validate_point_cloud_settings
 from .processing import copy_observation
 from .section_profile import build_profile, geometry_matches
 
@@ -49,6 +50,8 @@ def validate_judgment(model, sensor_ids=None):
     ):
         raise ValueError("invalid integer judgment window")
     if is_independent(model):
+        if "point_cloud" in model:
+            validate_point_cloud_settings(model["point_cloud"])
         sections = model["sections"]
         ids = {s["sensor_id"] for s in sections}
         if len(ids) != 2 or (sensor_ids is not None and ids != set(sensor_ids)):
@@ -141,16 +144,10 @@ class SectionJudgment:
                     history.clear()
             history.append(owned)
 
-    def calculate(self, now_ns):
-        if not self.model:
-            return None, ["FILL_METHOD_NOT_CONFIGURED"], []
-        if not is_independent(self.model):
-            return None, ["LEGACY_SECTION_MODEL_UNSUPPORTED"], []
-        if self.model["verification_state"] not in ("VERIFIED", "DEFAULT"):
-            return None, ["FILL_METHOD_NOT_VALIDATED"], []
+    def snapshot(self, now_ns):
         window = self.model["window"]
         with self.lock:
-            histories = {
+            return {
                 sid: [
                     o
                     for o in h
@@ -160,6 +157,15 @@ class SectionJudgment:
                 ]
                 for sid, h in self.history.items()
             }
+
+    def calculate(self, now_ns, *, histories=None):
+        if not self.model:
+            return None, ["FILL_METHOD_NOT_CONFIGURED"], []
+        if not is_independent(self.model):
+            return None, ["LEGACY_SECTION_MODEL_UNSUPPORTED"], []
+        if self.model["verification_state"] not in ("VERIFIED", "DEFAULT"):
+            return None, ["FILL_METHOD_NOT_VALIDATED"], []
+        histories = self.snapshot(now_ns) if histories is None else histories
         anchors = self._anchors(histories)
         sensors = {s["sensor_id"]: s for s in self.config["sensors"]}
         results, used = [], []

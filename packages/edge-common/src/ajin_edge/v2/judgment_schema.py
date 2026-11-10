@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 
+from .point_cloud_schema import SETTINGS_SCHEMA as POINT_CLOUD_SETTINGS_SCHEMA
+
 
 def obj(fields):
     return {
@@ -152,6 +154,7 @@ INDEPENDENT_JUDGMENT_SCHEMA = obj(
     }
 )
 JUDGMENT_SCHEMA = {"oneOf": [INDEPENDENT_JUDGMENT_SCHEMA, LEGACY_JUDGMENT_SCHEMA]}
+INDEPENDENT_JUDGMENT_SCHEMA["properties"]["point_cloud"] = POINT_CLOUD_SETTINGS_SCHEMA
 
 SENSOR_PROFILE_SCHEMA = deepcopy(SECTION_PROFILE_SCHEMA)
 SENSOR_PROFILE_SCHEMA["properties"].update(
