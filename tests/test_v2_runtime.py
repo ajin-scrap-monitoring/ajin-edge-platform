@@ -97,8 +97,11 @@ async def test_inflight_message_survives_concurrent_capacity_eviction(tmp_path, 
             token = "test"
 
             async def send(self, payload):
+                if payload["message_id"] != body["message_id"]:
+                    return Result("retry", "NETWORK_OR_TIMEOUT")
                 for _ in range(20):
-                    store.enqueue(message())
+                    # Concurrent producers use the same single writer as delivery.
+                    await store.call("enqueue", message())
                 return Result(outcome, reason="SCHEMA_REJECTED", received_at="2026-09-20T01:00:00Z")
 
         await DeliveryWorker(store, Transport()).step(now=0)
