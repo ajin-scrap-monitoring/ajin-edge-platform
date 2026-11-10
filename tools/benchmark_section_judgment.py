@@ -9,12 +9,14 @@ from pathlib import Path
 from statistics import median
 
 from ajin_edge.v2.orchestration import Orchestrator
-from ajin_edge.v2.processing import transform_scan
+from ajin_edge.v2.point_cloud import DEFAULT_POINT_CLOUD
+from ajin_edge.v2.processing import canonical, transform_scan
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=20)
+    parser.add_argument("--point-cloud", action="store_true")
     args = parser.parse_args()
     if not 1 <= args.iterations <= 100:
         parser.error("iterations must be 1..100")
@@ -25,6 +27,8 @@ def main():
     for sensor in cfg["sensors"]:
         sensor["calibration"]["verification_state"] = "VERIFIED"
     cfg["judgment"]["fusion"]["verification_state"] = "VERIFIED"
+    if args.point_cloud:
+        cfg["judgment"]["point_cloud"] = dict(DEFAULT_POINT_CLOUD)
     samples_by_sensor = {}
     for sensor, section in zip(cfg["sensors"], cfg["judgment"]["sections"], strict=True):
         section.update(
@@ -90,6 +94,11 @@ def main():
         assert abs(bundle[-1]["fill_estimate"]["ratio"] - 0.5) < 0.001
         assert len(bundle[-1]["section_profiles"]) == 2
         assert all(len(body["sensors"][0]["scan"]["points"]) == 800 for body in bundle[:-1])
+        if args.point_cloud:
+            assert all(
+                c["point_count"] == c["valid_point_count"] == 800
+                for c in bundle[-1]["filtered_point_clouds"]
+            )
     report = {
         "points_per_sensor_scan": 800,
         "input_scans": 10,
@@ -98,6 +107,8 @@ def main():
         "bundle_messages": 11,
         "median_ms": round(median(timings), 3),
         "max_ms": round(max(timings), 3),
+        "point_cloud_enabled": args.point_cloud,
+        "state_bytes": len(canonical(bundle[-1])),
     }
     print(json.dumps(report))
     if max(timings) >= 1000:

@@ -453,6 +453,78 @@
                   "type": "null"
                 }
               ]
+            },
+            "point_cloud": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "processing_version": {
+                  "enum": [
+                    "ANGULAR_RANGE_MEDIAN_V1"
+                  ]
+                },
+                "quality_min": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                },
+                "distance_min_mm": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1073741823
+                },
+                "distance_max_mm": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1073741823
+                },
+                "spatial_radius_points": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 8
+                },
+                "spatial_min_neighbors": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 16
+                },
+                "spatial_max_deviation_mm": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1000000000.0
+                },
+                "spatial_neighbor_spread_mm": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1000000000.0
+                },
+                "max_adjacent_angle_gap_mdeg": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 180000
+                },
+                "angle_match_tolerance_mdeg": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                }
+              },
+              "required": [
+                "enabled",
+                "processing_version",
+                "quality_min",
+                "distance_min_mm",
+                "distance_max_mm",
+                "spatial_radius_points",
+                "spatial_min_neighbors",
+                "spatial_max_deviation_mm",
+                "spatial_neighbor_spread_mm",
+                "max_adjacent_angle_gap_mdeg",
+                "angle_match_tolerance_mdeg"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [

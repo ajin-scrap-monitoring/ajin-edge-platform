@@ -1,0 +1,227 @@
+{
+  "site_id": "site-test",
+  "edge_id": "edge-test",
+  "config_revision": "synthetic-filtered-cloud-v1",
+  "coordinate_frame": {
+    "frame_id": "frame-test",
+    "unit": "mm",
+    "origin_description": "Synthetic origin",
+    "x_axis_description": "X",
+    "y_axis_description": "Y",
+    "z_axis_description": "Z up",
+    "handedness": "RIGHT_HANDED"
+  },
+  "sensors": [
+    {
+      "sensor_id": "lidar-a",
+      "angle_intervals_mdeg": [
+        {
+          "start_inclusive": 0,
+          "end_exclusive": 360000
+        }
+      ],
+      "calibration": {
+        "version": "cal-test",
+        "verification_state": "VERIFIED",
+        "angle_sign": 1,
+        "angle_zero_offset_mdeg": 0,
+        "rotation": [
+          [
+            0.0,
+            -1.0,
+            0.0
+          ],
+          [
+            -0.22414769292142694,
+            0.0,
+            0.9745551866148997
+          ],
+          [
+            -0.9745551866148997,
+            0.0,
+            -0.22414769292142694
+          ]
+        ],
+        "translation_mm": [
+          500,
+          2500,
+          10000
+        ]
+      }
+    },
+    {
+      "sensor_id": "lidar-b",
+      "angle_intervals_mdeg": [
+        {
+          "start_inclusive": 0,
+          "end_exclusive": 360000
+        }
+      ],
+      "calibration": {
+        "version": "cal-test",
+        "verification_state": "VERIFIED",
+        "angle_sign": 1,
+        "angle_zero_offset_mdeg": 0,
+        "rotation": [
+          [
+            0.14834045293024462,
+            0.0,
+            -0.9889363528682975
+          ],
+          [
+            0.0,
+            -1.0,
+            -0.0
+          ],
+          [
+            -0.9889363528682975,
+            0.0,
+            -0.14834045293024462
+          ]
+        ],
+        "translation_mm": [
+          2300,
+          3900,
+          10000
+        ]
+      }
+    }
+  ],
+  "judgment": {
+    "model_type": "INDEPENDENT_SECTIONS_V1",
+    "method_version": "synthetic-sections-v2",
+    "verification_state": "VERIFIED",
+    "sections": [
+      {
+        "origin_xy_mm": [
+          1000,
+          0
+        ],
+        "axis_xy": [
+          1,
+          0
+        ],
+        "bin_width_mm": 1000,
+        "floor_z_mm": [
+          0,
+          0,
+          0
+        ],
+        "ceiling_z_mm": [
+          10000,
+          10000,
+          10000
+        ],
+        "active_bins": [
+          true,
+          true,
+          true
+        ],
+        "sensor_id": "lidar-a",
+        "filters": {
+          "quality_min": 10,
+          "distance_min_mm": 1,
+          "distance_max_mm": 30000,
+          "height_margin_mm": 30,
+          "spatial_radius_bins": 0,
+          "spatial_max_deviation_mm": 200
+        },
+        "max_interpolation_gap_bins": 1
+      },
+      {
+        "origin_xy_mm": [
+          0,
+          1000
+        ],
+        "axis_xy": [
+          0,
+          1
+        ],
+        "bin_width_mm": 1000,
+        "floor_z_mm": [
+          0,
+          0,
+          0
+        ],
+        "ceiling_z_mm": [
+          10000,
+          10000,
+          10000
+        ],
+        "active_bins": [
+          true,
+          true,
+          true
+        ],
+        "sensor_id": "lidar-b",
+        "filters": {
+          "quality_min": 10,
+          "distance_min_mm": 1,
+          "distance_max_mm": 30000,
+          "height_margin_mm": 30,
+          "spatial_radius_bins": 0,
+          "spatial_max_deviation_mm": 200
+        },
+        "max_interpolation_gap_bins": 1
+      }
+    ],
+    "window": {
+      "scan_count": 5,
+      "min_scans": 3,
+      "max_age_ms": 1000,
+      "pair_tolerance_ms": 100
+    },
+    "fusion": {
+      "method": "CALIBRATED_WEIGHTED_SECTIONS",
+      "version": "synthetic-fusion-v1",
+      "verification_state": "VERIFIED",
+      "components": [
+        {
+          "sensor_id": "lidar-a",
+          "weight": 0.25,
+          "calibration": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        },
+        {
+          "sensor_id": "lidar-b",
+          "weight": 0.75,
+          "calibration": [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    "point_cloud": {
+      "enabled": true,
+      "processing_version": "ANGULAR_RANGE_MEDIAN_V1",
+      "quality_min": 10,
+      "distance_min_mm": 1,
+      "distance_max_mm": 30000,
+      "spatial_radius_points": 2,
+      "spatial_min_neighbors": 3,
+      "spatial_max_deviation_mm": 200,
+      "spatial_neighbor_spread_mm": 100,
+      "max_adjacent_angle_gap_mdeg": 500,
+      "angle_match_tolerance_mdeg": 50
+    }
+  },
+  "schema_version": "2.0",
+  "message_type": "edge_configuration",
+  "message_id": "00000000-0000-4000-8000-000000000001",
+  "generated_at": "2026-11-10T00:00:01Z"
+}
