@@ -376,3 +376,38 @@ def test_ack_rename_stat_failure_keeps_body_reachable_and_retryable(tmp_path, mo
         assert store.used_bytes() == actual_usage(tmp_path)
     with Outbox(tmp_path) as store:
         assert all(store.inspect(body["message_id"])["remote_acked"] for body in bodies)
+
+
+def test_enqueue_with_capacity_skips_unnecessary_collection(tmp_path, monkeypatch):
+    with Outbox(tmp_path) as store:
+        calls = []
+        original = store.collect
+
+        def counted(**kwargs):
+            calls.append(1)
+            return original(**kwargs)
+
+        monkeypatch.setattr(store, "collect", counted)
+        store.enqueue(message())
+        assert not calls
+
+
+def test_validated_payload_is_not_serialized_again_for_record(tmp_path, monkeypatch):
+    import ajin_edge.v2.outbox as module
+    from ajin_edge.v2.processing import canonical
+
+    body = message()
+    encoded = canonical(body)
+    with Outbox(tmp_path) as store:
+        original = module.canonical
+
+        def no_payload_reencode(value):
+            if isinstance(value, dict) and ("payload" in value or value is body):
+                raise AssertionError("validated point array was encoded again")
+            return original(value)
+
+        monkeypatch.setattr(module, "canonical", no_payload_reencode)
+        store._enqueue_validated(body, encoded, sync=True)
+        record = store.get(body["message_id"])
+        assert record["payload"] == body
+        assert store.index[body["message_id"]]["path"].read_bytes() == canonical(record)

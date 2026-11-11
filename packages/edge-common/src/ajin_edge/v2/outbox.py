@@ -417,7 +417,16 @@ class Outbox:
             "reason": None,
             "order": time.time_ns(),
         }
-        record_bytes = canonical(record)
+        # Reuse exactly the validated canonical payload bytes. Only the small
+        # record envelope is new; encoding its point arrays again is redundant.
+        record_bytes = (
+            b"{"
+            + b",".join(
+                canonical(key) + b":" + (encoded if key == "payload" else canonical(record[key]))
+                for key in sorted(record)
+            )
+            + b"}"
+        )
         needed = self._allocation(len(record_bytes))
         try:
             self._make_room(needed)
@@ -662,6 +671,10 @@ class Outbox:
             self._sync_directory()
 
     def _make_room(self, needed, *, exclude=(), now=None):
+        # ACK handling and the periodic collector reclaim eligible records.
+        # A write with sufficient room need not traverse protected ACKs again.
+        if self._spool_bytes() + needed <= self.limit - self.external_reserve - self.reserve:
+            return
         self.collect(now=now)
         excluded = self.inflight | set(exclude)
         while self._spool_bytes() + needed > self.limit - self.external_reserve - self.reserve:
