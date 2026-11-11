@@ -5,7 +5,21 @@ import pytest
 from ajin_edge.v2.outbox import Outbox
 from ajin_edge.v2.transport import Result
 from ajin_edge.v2.worker import DeliveryWorker
-from test_v2_contracts import message
+from test_v2_contracts import message as periodic_message
+
+
+def message():
+    body = periodic_message()
+    body.update(
+        delivery_kind="EVIDENCE",
+        selection_policy="REFERENCED_SCANS",
+        report_interval_ms=None,
+        pair_state="NOT_APPLICABLE",
+        pair_delta_ms=None,
+        assessment_ids=["test-assessment"],
+    )
+    body["sensors"] = [s for s in body["sensors"] if s["scan"] is not None]
+    return body
 
 
 async def test_free_slot_refills_before_slow_peer_finishes_with_six_requests_max(tmp_path):
@@ -110,14 +124,14 @@ async def test_cancellation_during_executor_selection_releases_late_pin(tmp_path
     with Outbox(tmp_path) as store:
         body = message()
         store.enqueue(body)
-        original = store.next_ready
+        original = store.get
 
-        def delayed(**kwargs):
+        def delayed(*args, **kwargs):
             entered.set()
             release.wait(2)
-            return original(**kwargs)
+            return original(*args, **kwargs)
 
-        monkeypatch.setattr(store, "next_ready", delayed)
+        monkeypatch.setattr(store, "get", delayed)
         worker = DeliveryWorker(store, object())
         task = asyncio.create_task(worker.step())
         await asyncio.to_thread(entered.wait, 1)
@@ -210,13 +224,13 @@ async def test_slow_selection_does_not_prevent_any_network_dispatch(tmp_path, mo
 
     with Outbox(tmp_path) as store:
         store.enqueue(message())
-        original = store.next_ready_many
+        original = store.next_ordered_many
 
         def delayed(limit):
             clock[0] += 2
             return original(limit)
 
-        monkeypatch.setattr(store, "next_ready_many", delayed)
+        monkeypatch.setattr(store, "next_ordered_many", delayed)
         await DeliveryWorker(store, Transport(), clock=lambda: clock[0]).step()
         assert len(sent) == 1
         assert not store.index
@@ -238,7 +252,7 @@ def test_partial_selection_error_releases_every_new_pin(tmp_path, monkeypatch):
 
         monkeypatch.setattr(store, "get", failing)
         with pytest.raises(OSError):
-            store.next_ready_many()
+            store.next_ordered_many()
         assert not store.inflight
         assert store.stats()["pending_messages"] == 4
 
@@ -333,7 +347,7 @@ async def test_next_batch_flows_before_slowest_previous_request_finishes(tmp_pat
     with Outbox(tmp_path) as store:
         for body in bodies:
             store.enqueue(body)
-        original = store.next_ready_many
+        original = store.next_ordered_many
 
         def bounded(limit):
             rows = original(limit)
@@ -373,7 +387,7 @@ async def test_cancel_with_replacement_selection_and_ack_queued_preserves_bodies
     with Outbox(tmp_path) as store:
         for body in bodies:
             store.enqueue(body)
-        original_select, original_call = store.next_ready_many, store.call
+        original_select, original_call = store.next_ordered_many, store.call
         selections = 0
 
         def select(limit):
@@ -389,7 +403,7 @@ async def test_cancel_with_replacement_selection_and_ack_queued_preserves_bodies
                 write_queued.set()
             return await original_call(method, *args, **kwargs)
 
-        monkeypatch.setattr(store, "next_ready_many", select)
+        monkeypatch.setattr(store, "next_ordered_many", select)
         monkeypatch.setattr(store, "call", call)
         task = asyncio.create_task(DeliveryWorker(store, Transport(), clock=lambda: 0).step())
         try:
@@ -428,7 +442,7 @@ async def test_replacement_selected_after_deadline_is_released_without_sending(
     with Outbox(tmp_path) as store:
         for _ in range(32):
             store.enqueue(message())
-        original = store.next_ready_many
+        original = store.next_ordered_many
         selections = 0
 
         def select(limit):
@@ -440,7 +454,7 @@ async def test_replacement_selected_after_deadline_is_released_without_sending(
                 replacement_ids.update(r["payload"]["message_id"] for r in rows)
             return rows
 
-        monkeypatch.setattr(store, "next_ready_many", select)
+        monkeypatch.setattr(store, "next_ordered_many", select)
         await DeliveryWorker(store, Transport(), clock=lambda: clock[0]).step()
         assert replacement_ids
         assert not replacement_ids.intersection(sent)

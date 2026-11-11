@@ -451,6 +451,10 @@ def service_snapshots(config, *, loss_tracker=None, now=None, identities=None):
                 if name.startswith("lidar-driver-")
                 else registration["config_revision"]
             )
+            if name == "camera-edge":
+                expected_revision = config.get(
+                    "camera_config_revision", registration["config_revision"]
+                )
             if (
                 source["edge_id"] != registration["edge_id"]
                 or source["site_id"] != registration["site_id"]

@@ -58,6 +58,9 @@ class DeliveryWorker:
 
         def dispatch(payload, is_status):
             nonlocal sent
+            row = rows.get(payload["message_id"])
+            if row is not None and hasattr(self.transport, "record_registration"):
+                self.transport.record_registration(payload["message_id"], row["order"])
             tasks[asyncio.create_task(self.transport.send(payload))] = (payload, is_status)
             sent += 1
 
@@ -87,7 +90,9 @@ class DeliveryWorker:
             ):
                 # Only one selection can reserve these slots. ACK completion
                 # may free additional slots, but cannot increase this batch.
-                selection_task = asyncio.create_task(self.store.call("next_ready_many", available))
+                selection_task = asyncio.create_task(
+                    self.store.call("next_ordered_many", available)
+                )
 
         def start_flush(*, force=False):
             nonlocal ack_task, ack_batch
@@ -116,7 +121,7 @@ class DeliveryWorker:
             # Begin with a bounded selection, then overlap replacement reads
             # with HTTP after durable ACKs free slots. Pins retain unsent bodies
             # and remote ACKs until durable confirmation.
-            selection_task = asyncio.create_task(self.store.call("next_ready_many", 16))
+            selection_task = asyncio.create_task(self.store.call("next_ordered_many", 16))
             batch = await asyncio.shield(selection_task)
             selection_task = None
             selection_exhausted = not batch

@@ -76,6 +76,7 @@ class Outbox:
         self._acked = set()
         self._reference_cache = None
         self._ready_old, self._ready_new, self._ready_config = [], [], []
+        self._ordered_periodic, self._other_old, self._other_new = [], [], []
         self._ready_live = {"PERIODIC": [], "STATE": []}
         self._queue_version = 0
         self.operation_metrics = {}
@@ -388,6 +389,11 @@ class Outbox:
         live_kind = item["delivery_kind"] or item["assessment_type"]
         if live_kind in self._ready_live:
             heapq.heappush(self._ready_live[live_kind], (-entry[0], entry[1], mid))
+        if item["delivery_kind"] == "PERIODIC":
+            heapq.heappush(self._ordered_periodic, entry)
+        else:
+            heapq.heappush(self._other_old, entry)
+            heapq.heappush(self._other_new, (-entry[0], entry[1], mid))
         self._compact_ready()
 
     def _compact_ready(self):
@@ -400,6 +406,9 @@ class Outbox:
                     self._ready_new,
                     self._ready_config,
                     *self._ready_live.values(),
+                    self._ordered_periodic,
+                    self._other_old,
+                    self._other_new,
                 )
             )
             <= 2 * len(self.index) + 64
@@ -421,11 +430,19 @@ class Outbox:
                 for order, version, mid in entries
                 if (self.index[mid]["delivery_kind"] or self.index[mid]["assessment_type"]) == kind
             ]
+        self._ordered_periodic = [
+            e for e in entries if self.index[e[2]]["delivery_kind"] == "PERIODIC"
+        ]
+        self._other_old = [e for e in entries if self.index[e[2]]["delivery_kind"] != "PERIODIC"]
+        self._other_new = [(-o, v, m) for o, v, m in self._other_old]
         for heap in (
             self._ready_old,
             self._ready_new,
             self._ready_config,
             *self._ready_live.values(),
+            self._ordered_periodic,
+            self._other_old,
+            self._other_new,
         ):
             heapq.heapify(heap)
 
@@ -819,6 +836,38 @@ class Outbox:
                 if row is None:
                     break
                 rows.append(row)
+            return rows
+        except BaseException:
+            self.unpin_many(tuple(self.inflight - before))
+            raise
+
+    def next_ordered_many(self, limit=16):
+        """One oldest periodic reservation; other message lanes remain concurrent."""
+        if type(limit) is not int or not 1 <= limit <= 16:
+            raise ValueError("invalid selection batch")
+        before = set(self.inflight)
+        periodic_busy = any(
+            self.index[m]["delivery_kind"] == "PERIODIC" for m in before if m in self.index
+        )
+        rows = []
+        state_reserved = False
+        try:
+            for _ in range(limit):
+                mid = self._ready(self._ready_config)
+                if mid is None and not periodic_busy:
+                    mid = self._ready(self._ordered_periodic)
+                    if mid is not None:
+                        periodic_busy = True
+                if mid is None and not state_reserved:
+                    mid = self._ready(self._ready_live["STATE"])
+                    state_reserved = True
+                if mid is None:
+                    mid = self._ready(self._other_new if self.latest else self._other_old)
+                    self.latest = not self.latest
+                if mid is None:
+                    break
+                self.inflight.add(mid)
+                rows.append(self.get(mid))
             return rows
         except BaseException:
             self.unpin_many(tuple(self.inflight - before))

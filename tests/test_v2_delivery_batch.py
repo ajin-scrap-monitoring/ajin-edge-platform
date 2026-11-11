@@ -4,7 +4,21 @@ import pytest
 from ajin_edge.v2.outbox import CapacityError, Outbox
 from ajin_edge.v2.transport import Result
 from ajin_edge.v2.worker import DeliveryWorker
-from test_v2_contracts import message
+from test_v2_contracts import message as periodic_message
+
+
+def message():
+    body = periodic_message()
+    body.update(
+        delivery_kind="EVIDENCE",
+        selection_policy="REFERENCED_SCANS",
+        report_interval_ms=None,
+        pair_state="NOT_APPLICABLE",
+        pair_delta_ms=None,
+        assessment_ids=["test-assessment"],
+    )
+    body["sensors"] = [s for s in body["sensors"] if s["scan"] is not None]
+    return body
 
 
 async def test_independent_pending_posts_can_progress_concurrently_without_duplicate_selection(
