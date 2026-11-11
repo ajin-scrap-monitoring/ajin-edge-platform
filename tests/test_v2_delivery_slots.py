@@ -8,8 +8,8 @@ from ajin_edge.v2.worker import DeliveryWorker
 from test_v2_contracts import message
 
 
-async def test_free_slot_refills_before_slow_peer_finishes_with_eight_requests_max(tmp_path):
-    bodies = [message() for _ in range(12)]
+async def test_free_slot_refills_before_slow_peer_finishes_with_six_requests_max(tmp_path):
+    bodies = [message() for _ in range(8)]
     release = asyncio.Event()
     refilled = asyncio.Event()
     sent = []
@@ -23,7 +23,7 @@ async def test_free_slot_refills_before_slow_peer_finishes_with_eight_requests_m
             sent.append(body["message_id"])
             active += 1
             peak = max(peak, active)
-            if len(sent) > 8:
+            if len(sent) > 6:
                 refilled.set()
             try:
                 if body["message_id"] == bodies[-1]["message_id"]:
@@ -41,19 +41,19 @@ async def test_free_slot_refills_before_slow_peer_finishes_with_eight_requests_m
         try:
             await asyncio.wait_for(refilled.wait(), 1)
             assert not release.is_set()
-            assert peak <= 8
+            assert peak <= 6
             assert len(store.inflight) <= 16  # Includes bounded, not-yet-durable ACKs.
         finally:
             release.set()
             await task
-        assert len(sent) == len(set(sent)) == 12
+        assert len(sent) == len(set(sent)) == 8
         assert store.stats()["pending_messages"] == 0
         assert not store.inflight
 
 
 @pytest.mark.parametrize("outcome", ["auth", "configuration", "retry"])
 async def test_failure_stops_refill_and_keeps_inflight_receipts(tmp_path, outcome):
-    bodies = [message() for _ in range(12)]
+    bodies = [message() for _ in range(8)]
     sent = []
 
     class Transport:
@@ -71,14 +71,14 @@ async def test_failure_stops_refill_and_keeps_inflight_receipts(tmp_path, outcom
             store.enqueue(body)
         worker = DeliveryWorker(store, Transport())
         await worker.step(now=0)
-        assert len(sent) == 8
+        assert len(sent) == 6
         if outcome == "auth":
             assert worker.blocked_token == "test"
         elif outcome == "configuration":
             assert worker.configuration_blocked
         else:
             assert worker.next_attempt > 0
-        assert store.stats()["pending_messages"] == 5
+        assert store.stats()["pending_messages"] == 3
         assert not store.inflight
 
 
@@ -142,10 +142,10 @@ async def test_fast_successful_turn_is_finite_and_all_unconfirmed_data_remains(t
             return Result("accepted", received_at="2026-09-20T01:00:00Z")
 
     with Outbox(tmp_path) as store:
-        for _ in range(24):
+        for _ in range(40):
             store.enqueue(message())
         await DeliveryWorker(store, Transport(), clock=lambda: 0).step(now=0)
-        assert len(sent) == len(set(sent)) == 16
+        assert len(sent) == len(set(sent)) == 32
         assert store.stats()["pending_messages"] == 8
         assert not store.inflight
 
@@ -180,7 +180,7 @@ async def test_network_slots_continue_while_ack_batch_waits_for_storage(tmp_path
             return original(receipts, **kwargs)
 
         monkeypatch.setattr(store, "delivered_many", delayed)
-        task = asyncio.create_task(DeliveryWorker(store, Transport(), network_slots=6).step())
+        task = asyncio.create_task(DeliveryWorker(store, Transport()).step())
         try:
             assert await asyncio.to_thread(ack_entered.wait, 1)
             assert len(sent) == 14
@@ -281,7 +281,7 @@ async def test_cancel_during_ack_flush_keeps_unconfirmed_data_replayable(tmp_pat
             assert store.inspect(mid)["remote_acked"] or store.get(mid)["payload"] == body
 
 
-async def test_eight_network_slots_are_available_and_bounded(tmp_path):
+async def test_six_network_slots_are_available_and_bounded(tmp_path):
     release, full = asyncio.Event(), asyncio.Event()
     active = peak = 0
 
@@ -292,7 +292,7 @@ async def test_eight_network_slots_are_available_and_bounded(tmp_path):
             nonlocal active, peak
             active += 1
             peak = max(peak, active)
-            if active == 8:
+            if active == 6:
                 full.set()
             try:
                 await release.wait()
@@ -306,9 +306,143 @@ async def test_eight_network_slots_are_available_and_bounded(tmp_path):
         task = asyncio.create_task(DeliveryWorker(store, Transport()).step())
         try:
             await asyncio.wait_for(full.wait(), 0.5)
-            assert active == peak == 8
+            assert active == peak == 6
         finally:
             release.set()
             await task
-        assert peak == 8
+        assert peak == 6
         assert not store.inflight
+
+
+async def test_next_batch_flows_before_slowest_previous_request_finishes(tmp_path, monkeypatch):
+    release, next_batch = asyncio.Event(), asyncio.Event()
+    bodies = [message() for _ in range(24)]
+    sent = []
+
+    class Transport:
+        token = "test"
+
+        async def send(self, body):
+            sent.append(body["message_id"])
+            if len(sent) == 24:
+                next_batch.set()
+            if body["message_id"] == bodies[-1]["message_id"]:
+                await release.wait()
+            return Result("accepted", received_at="2026-09-20T01:00:00Z")
+
+    with Outbox(tmp_path) as store:
+        for body in bodies:
+            store.enqueue(body)
+        original = store.next_ready_many
+
+        def bounded(limit):
+            rows = original(limit)
+            assert len(store.inflight) <= 16
+            return rows
+
+        monkeypatch.setattr(store, "next_ready_many", bounded)
+        task = asyncio.create_task(DeliveryWorker(store, Transport(), clock=lambda: 0).step())
+        try:
+            await asyncio.wait_for(next_batch.wait(), 1)
+            assert not release.is_set()
+        finally:
+            release.set()
+            await task
+        assert len(set(sent)) == 24
+        assert not store.inflight
+        assert store.stats()["pending_messages"] == 0
+
+
+async def test_cancel_with_replacement_selection_and_ack_queued_preserves_bodies(
+    tmp_path, monkeypatch
+):
+    entered, release = threading.Event(), threading.Event()
+    http_release, write_queued = asyncio.Event(), asyncio.Event()
+    bodies = [message() for _ in range(32)]
+    sent = []
+
+    class Transport:
+        token = "test"
+
+        async def send(self, body):
+            sent.append(body["message_id"])
+            if len(sent) > 8:
+                await http_release.wait()
+            return Result("accepted", received_at="2026-09-20T01:00:00Z")
+
+    with Outbox(tmp_path) as store:
+        for body in bodies:
+            store.enqueue(body)
+        original_select, original_call = store.next_ready_many, store.call
+        selections = 0
+
+        def select(limit):
+            nonlocal selections
+            selections += 1
+            if selections == 2:
+                entered.set()
+                release.wait(3)
+            return original_select(limit)
+
+        async def call(method, *args, **kwargs):
+            if method == "delivered_many" and entered.is_set():
+                write_queued.set()
+            return await original_call(method, *args, **kwargs)
+
+        monkeypatch.setattr(store, "next_ready_many", select)
+        monkeypatch.setattr(store, "call", call)
+        task = asyncio.create_task(DeliveryWorker(store, Transport(), clock=lambda: 0).step())
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            http_release.set()
+            await asyncio.wait_for(write_queued.wait(), 1)
+            task.cancel()
+        finally:
+            http_release.set()
+            release.set()
+            if not task.done():
+                task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert not store.inflight
+    with Outbox(tmp_path) as store:
+        for body in bodies:
+            mid = body["message_id"]
+            assert store.inspect(mid)["remote_acked"] or store.get(mid)["payload"] == body
+
+
+async def test_replacement_selected_after_deadline_is_released_without_sending(
+    tmp_path, monkeypatch
+):
+    clock = [0.0]
+    sent, replacement_ids = [], set()
+
+    class Transport:
+        token = "test"
+
+        async def send(self, body):
+            sent.append(body["message_id"])
+            await asyncio.sleep(0)
+            return Result("accepted", received_at="2026-09-20T01:00:00Z")
+
+    with Outbox(tmp_path) as store:
+        for _ in range(32):
+            store.enqueue(message())
+        original = store.next_ready_many
+        selections = 0
+
+        def select(limit):
+            nonlocal selections
+            selections += 1
+            rows = original(limit)
+            if selections == 2:
+                clock[0] = 3
+                replacement_ids.update(r["payload"]["message_id"] for r in rows)
+            return rows
+
+        monkeypatch.setattr(store, "next_ready_many", select)
+        await DeliveryWorker(store, Transport(), clock=lambda: clock[0]).step()
+        assert replacement_ids
+        assert not replacement_ids.intersection(sent)
+        assert not store.inflight
+        assert all(store.get(mid)["state"] == "pending" for mid in replacement_ids)

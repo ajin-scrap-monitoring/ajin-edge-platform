@@ -10,10 +10,10 @@ from .transport import Backoff
 
 class DeliveryWorker:
     def __init__(
-        self, store, transport, *, latest_status=None, clock=time.monotonic, network_slots=8
+        self, store, transport, *, latest_status=None, clock=time.monotonic, network_slots=6
     ):
-        if type(network_slots) is not int or not 1 <= network_slots <= 8:
-            raise ValueError("network slots must be between 1 and 8")
+        if type(network_slots) is not int or not 1 <= network_slots <= 6:
+            raise ValueError("network slots must be between 1 and 6")
         self.network_slots = network_slots
         self.store, self.transport = store, transport
         self.latest_status = latest_status if latest_status is not None else {}
@@ -47,6 +47,8 @@ class DeliveryWorker:
         tasks = {}
         ready = deque()
         acknowledgements = []
+        selection_task = None
+        selection_exhausted = False
         ack_task = None
         ack_batch = []
         quarantines = []
@@ -65,12 +67,27 @@ class DeliveryWorker:
             while (
                 ready
                 and len(tasks) < self.network_slots
-                and sent < 16
+                and sent < 32
                 and not stopped
-                and self.clock() - send_started < 1
+                and self.clock() - send_started < 2
             ):
                 row = ready.popleft()
                 dispatch(row["payload"], False)
+
+        def start_selection():
+            nonlocal selection_task
+            available = min(16 - len(rows), 32 - sent - len(ready))
+            if (
+                selection_task is None
+                and not selection_exhausted
+                and not stopped
+                and len(ready) < self.network_slots
+                and available > 0
+                and self.clock() - send_started < 2
+            ):
+                # Only one selection can reserve these slots. ACK completion
+                # may free additional slots, but cannot increase this batch.
+                selection_task = asyncio.create_task(self.store.call("next_ready_many", available))
 
         def start_flush(*, force=False):
             nonlocal ack_task, ack_batch
@@ -96,16 +113,13 @@ class DeliveryWorker:
                 await finish_flush()
 
         try:
-            # Select a bounded turn once. Network slot refills then never wait
-            # behind enqueue/fsync jobs on the storage executor. Pins retain
-            # both unsent bodies and remote ACKs until durable confirmation.
-            selected = asyncio.create_task(self.store.call("next_ready_many", 16))
-            try:
-                batch = await asyncio.shield(selected)
-            except asyncio.CancelledError:
-                batch = await selected
-                rows.update((r["payload"]["message_id"], r) for r in batch)
-                raise
+            # Begin with a bounded selection, then overlap replacement reads
+            # with HTTP after durable ACKs free slots. Pins retain unsent bodies
+            # and remote ACKs until durable confirmation.
+            selection_task = asyncio.create_task(self.store.call("next_ready_many", 16))
+            batch = await asyncio.shield(selection_task)
+            selection_task = None
+            selection_exhausted = not batch
             ready.extend(batch)
             rows.update((r["payload"]["message_id"], r) for r in batch)
             send_started = self.clock()
@@ -120,14 +134,23 @@ class DeliveryWorker:
             if not tasks:
                 return False
             self.previous_was_status = use_status
-            while tasks or ack_task is not None:
+            while tasks or ack_task is not None or selection_task is not None:
                 waiting = set(tasks)
                 if ack_task is not None:
                     waiting.add(ack_task)
+                if selection_task is not None:
+                    waiting.add(selection_task)
                 done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
                 if ack_task is not None and ack_task in done:
                     done.remove(ack_task)
                     await finish_flush()
+                if selection_task is not None and selection_task in done:
+                    done.remove(selection_task)
+                    batch = selection_task.result()
+                    selection_task = None
+                    selection_exhausted = not batch
+                    ready.extend(batch)
+                    rows.update((r["payload"]["message_id"], r) for r in batch)
                 errors = []
                 for task in done:
                     payload, is_status = tasks.pop(task)
@@ -164,10 +187,20 @@ class DeliveryWorker:
                         self.latest_status.clear()
                 refill()
                 start_flush(force=not tasks or bool(errors))
+                start_selection()
                 if errors:
                     await drain_acks()
                     raise errors[0]
             await drain_acks()
+            if quarantines:
+                # All HTTP and selection tasks have settled. Unsent/retry rows
+                # no longer need pins; retaining them could prevent the atomic
+                # quarantine replacement from reserving space at capacity.
+                targets = {mid for mid, _ in quarantines}
+                releasable = tuple(mid for mid in rows if mid not in targets)
+                await self.store.call("unpin_many", releasable)
+                for mid in releasable:
+                    rows.pop(mid)
             for mid, reason in quarantines:
                 await self.store.call("quarantine", mid, reason)
             self.reason = reasons[0] if reasons else ""
@@ -189,5 +222,9 @@ class DeliveryWorker:
                 # A queued/running durable write must settle before releasing
                 # its pins; cancellation may replay HTTP but never drops a body.
                 await asyncio.gather(ack_task, return_exceptions=True)
+            if selection_task is not None:
+                selected = await asyncio.gather(selection_task, return_exceptions=True)
+                if not isinstance(selected[0], BaseException):
+                    rows.update((r["payload"]["message_id"], r) for r in selected[0])
             await self.store.call("unpin_many", tuple(rows))
         return True
