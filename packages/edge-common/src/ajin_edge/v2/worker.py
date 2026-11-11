@@ -54,6 +54,7 @@ class DeliveryWorker:
         quarantines = []
         sent = 0
         stopped = False
+        periodic_turn = False
         reasons, progress, retries = [], [], []
 
         def dispatch(payload, is_status):
@@ -74,7 +75,23 @@ class DeliveryWorker:
                 and not stopped
                 and self.clock() - send_started < 2
             ):
-                row = ready.popleft()
+                periodic = next(
+                    (r for r in ready if r["payload"].get("delivery_kind") == "PERIODIC"), None
+                )
+                if periodic is not None:
+                    ready.remove(periodic)
+                    row = periodic
+                else:
+                    # Keep the periodic lane available while its durable ACK is
+                    # pending, rather than filling it with slow evidence HTTP.
+                    if (
+                        periodic_turn
+                        and self.network_slots > 1
+                        and sum(p.get("delivery_kind") != "PERIODIC" for p, _ in tasks.values())
+                        >= self.network_slots - 1
+                    ):
+                        break
+                    row = ready.popleft()
                 dispatch(row["payload"], False)
 
         def start_selection():
@@ -84,7 +101,15 @@ class DeliveryWorker:
                 selection_task is None
                 and not selection_exhausted
                 and not stopped
-                and len(ready) < self.network_slots
+                and (
+                    len(ready) < self.network_slots
+                    or (
+                        periodic_turn
+                        and not any(
+                            r["payload"].get("delivery_kind") == "PERIODIC" for r in rows.values()
+                        )
+                    )
+                )
                 and available > 0
                 and self.clock() - send_started < 2
             ):
@@ -96,7 +121,15 @@ class DeliveryWorker:
 
         def start_flush(*, force=False):
             nonlocal ack_task, ack_batch
-            if ack_task is None and acknowledgements and (force or len(acknowledgements) >= 8):
+            periodic_waiting = any(
+                rows[mid]["payload"].get("delivery_kind") == "PERIODIC"
+                for mid, _ in acknowledgements
+            )
+            if (
+                ack_task is None
+                and acknowledgements
+                and (force or periodic_waiting or len(acknowledgements) >= 8)
+            ):
                 ack_batch = acknowledgements[:8]
                 del acknowledgements[: len(ack_batch)]
                 ack_task = asyncio.create_task(
@@ -126,6 +159,7 @@ class DeliveryWorker:
             batch = await asyncio.shield(selection_task)
             selection_task = None
             selection_exhausted = not batch
+            periodic_turn = any(r["payload"].get("delivery_kind") == "PERIODIC" for r in batch)
             ready.extend(batch)
             rows.update((r["payload"]["message_id"], r) for r in batch)
             send_started = self.clock()
@@ -155,10 +189,12 @@ class DeliveryWorker:
                     batch = selection_task.result()
                     selection_task = None
                     selection_exhausted = not batch
+                    periodic_turn |= any(
+                        r["payload"].get("delivery_kind") == "PERIODIC" for r in batch
+                    )
                     ready.extend(batch)
                     rows.update((r["payload"]["message_id"], r) for r in batch)
                 errors = []
-                periodic_accepted = False
                 for task in done:
                     payload, is_status = tasks.pop(task)
                     try:
@@ -173,7 +209,6 @@ class DeliveryWorker:
                         progress.append(result.received_at)
                         if not is_status:
                             acknowledgements.append((payload["message_id"], result.received_at))
-                            periodic_accepted |= payload.get("delivery_kind") == "PERIODIC"
                     elif result.kind == "auth":
                         self.blocked_token = self.transport.token
                         stopped = True
@@ -194,7 +229,7 @@ class DeliveryWorker:
                     ):
                         self.latest_status.clear()
                 refill()
-                start_flush(force=not tasks or bool(errors) or periodic_accepted)
+                start_flush(force=not tasks or bool(errors))
                 start_selection()
                 if errors:
                     await drain_acks()

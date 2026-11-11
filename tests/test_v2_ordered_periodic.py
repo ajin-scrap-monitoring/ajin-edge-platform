@@ -171,3 +171,81 @@ async def test_next_periodic_does_not_wait_for_slow_evidence_ack(tmp_path):
         finally:
             release.set()
             await task
+
+
+async def test_periodic_flush_survives_an_already_running_ack_write(tmp_path, monkeypatch):
+    import threading
+
+    from test_v2_delivery_batch import message as evidence
+
+    bodies = [message(), message()]
+    entered, release_write = threading.Event(), threading.Event()
+    release_http, periodic_done, second = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    evidence_calls = 0
+
+    class Transport:
+        token = "test"
+
+        async def send(self, body):
+            nonlocal evidence_calls
+            if body["message_id"] == bodies[0]["message_id"]:
+                await asyncio.to_thread(entered.wait, 2)
+                periodic_done.set()
+            elif body["message_id"] == bodies[1]["message_id"]:
+                second.set()
+            else:
+                evidence_calls += 1
+                if evidence_calls > 8:
+                    await release_http.wait()
+            return Result("accepted", received_at="2026-09-20T01:00:00Z")
+
+    with Outbox(tmp_path) as store:
+        for body in [*bodies, *[evidence() for _ in range(16)]]:
+            store.enqueue(body)
+        original = store.delivered_many
+
+        def gated(receipts, **kwargs):
+            if not entered.is_set():
+                entered.set()
+                release_write.wait(3)
+            return original(receipts, **kwargs)
+
+        monkeypatch.setattr(store, "delivered_many", gated)
+        task = asyncio.create_task(DeliveryWorker(store, Transport(), clock=lambda: 0).step())
+        try:
+            await asyncio.wait_for(periodic_done.wait(), 1)
+            await asyncio.sleep(0.03)
+            release_write.set()
+            await asyncio.wait_for(second.wait(), 0.5)
+        finally:
+            release_write.set()
+            release_http.set()
+            await task
+
+
+async def test_periodic_refills_through_full_reserved_evidence_batch(tmp_path):
+    from test_v2_delivery_batch import message as evidence
+
+    bodies = [message(), message()]
+    release, second = asyncio.Event(), asyncio.Event()
+
+    class Transport:
+        token = "test"
+
+        async def send(self, body):
+            if body.get("delivery_kind") == "EVIDENCE":
+                await release.wait()
+            elif body["message_id"] == bodies[1]["message_id"]:
+                second.set()
+            return Result("accepted", received_at="2026-09-20T01:00:00Z")
+
+    with Outbox(tmp_path) as store:
+        for body in [*bodies, *[evidence() for _ in range(20)]]:
+            store.enqueue(body)
+        task = asyncio.create_task(DeliveryWorker(store, Transport()).step())
+        try:
+            await asyncio.wait_for(second.wait(), 0.5)
+            assert len(store.inflight) <= 16
+        finally:
+            release.set()
+            await task
