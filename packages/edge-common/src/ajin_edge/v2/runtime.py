@@ -7,6 +7,7 @@ import os
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -91,7 +92,7 @@ class LocalStatus:
     def advanced(self):
         self.progress = utc_now()
 
-    def write(self, state="HEALTHY", **telemetry):
+    def _snapshot(self, state, telemetry):
         if (
             self.reason == "LOCAL_DELIVERY_BACKLOG_LOSS"
             and self.last_backlog_loss is not None
@@ -101,30 +102,44 @@ class LocalStatus:
             if state == "DEGRADED":
                 state = "HEALTHY"
         registration = self.config["configuration"]
-        # Each of the three v2 writers has one bounded snapshot and one replacement.
-        if (
-            len(canonical(telemetry)) > 60000
-            or auxiliary_bytes(self.config) > STATUS_RESERVE - 65536
-        ):
+        if len(canonical(telemetry)) > 60000:
             raise CapacityError("bounded status storage exhausted")
-        atomic_json(
-            Path(self.config["status_dir"]) / f"{self.service}.json",
-            {
-                "schema_version": "2.0",
-                "service": self.service,
-                "instance_id": self.instance_id,
-                "clock_domain_id": self.clock_domain_id,
-                "site_id": registration["site_id"],
-                "edge_id": registration["edge_id"],
-                "config_revision": registration["config_revision"],
-                "reported_at": utc_now(),
-                "last_progress_at": self.progress,
-                "state": state,
-                "reason_codes": [self.reason] if self.reason else [],
-                "local_dropped_messages": self.losses,
-                **telemetry,
-            },
-        )
+        return {
+            "schema_version": "2.0",
+            "service": self.service,
+            "instance_id": self.instance_id,
+            "clock_domain_id": self.clock_domain_id,
+            "site_id": registration["site_id"],
+            "edge_id": registration["edge_id"],
+            "config_revision": registration["config_revision"],
+            "reported_at": utc_now(),
+            "last_progress_at": self.progress,
+            "state": state,
+            "reason_codes": [self.reason] if self.reason else [],
+            "local_dropped_messages": self.losses,
+            **deepcopy(telemetry),
+        }
+
+    def _persist(self, snapshot):
+        # Keep the same bounded storage and durable atomic replacement policy.
+        if auxiliary_bytes(self.config) > STATUS_RESERVE - 65536:
+            raise CapacityError("bounded status storage exhausted")
+        atomic_json(Path(self.config["status_dir"]) / f"{self.service}.json", snapshot)
+
+    def write(self, state="HEALTHY", **telemetry):
+        self._persist(self._snapshot(state, telemetry))
+
+    async def write_async(self, state="HEALTHY", **telemetry):
+        # Capture mutable state on the owner loop. Slow filesystem sync must not
+        # stall scan consumption, observation publication or recovery evaluation.
+        snapshot = self._snapshot(state, telemetry)
+        task = asyncio.create_task(asyncio.to_thread(self._persist, snapshot))
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Do not let a retired generation overwrite its successor's status.
+            await task
+            raise
 
 
 class PendingSender:
@@ -193,7 +208,7 @@ async def register(client, registration, gate, status):
         except grpc.aio.AioRpcError:
             pass
         status.reason = "CONFIGURATION_ACK_PENDING"
-        status.write("STARTING")
+        await status.write_async("STARTING")
         await asyncio.sleep(1)
 
 
@@ -265,7 +280,7 @@ async def processing(config, stop):
                         executor, lambda: engine.periodic(now_ns=time.monotonic_ns())
                     )
                 )
-                status.write(
+                await status.write_async(
                     "DEGRADED" if status.reason else "HEALTHY",
                     dropped_scans=engine.dropped_scans,
                     dropped_observations=broker.dropped,
@@ -338,7 +353,7 @@ async def uplink(config, stop):
                         if worker.blocked_token or worker.configuration_blocked
                         else ("RETRYING" if worker.reason else "HEALTHY")
                     )
-                    status.write(
+                    await status.write_async(
                         state,
                         http_delivery=transport.metrics,
                         **await store.call("stats", audit=False),
@@ -594,7 +609,7 @@ async def orchestrator(config, stop):
                 except grpc.aio.AioRpcError:
                     status.reason = "LOCAL_DELIVERY_UNAVAILABLE"
                     orch.loss_recovery.interrupt()
-                status.write(
+                await status.write_async(
                     "DEGRADED" if status.reason else "HEALTHY",
                     observations=orch.observations,
                     loss_recovery=orch.loss_recovery.snapshot(time.monotonic()),
@@ -687,7 +702,7 @@ async def run_service(role, path, stop):
                     }[role],
                 )
                 status.reason = "CONFIGURATION_STATE_INVALID"
-                status.write("FATAL")
+                await status.write_async("FATAL")
                 raise ValueError("configuration state unavailable") from failure
     finally:
         stopped.cancel()
