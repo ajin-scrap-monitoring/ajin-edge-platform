@@ -11,3 +11,6 @@ Local uplink diagnostics include `http_delivery.PERIODIC.recent_attempts` (at mo
 Accepted status diagnostics retain the exact accepted message ID, generation/receipt time and owned copies of service/sensor status fields. This proves the sender validated the ACK for that body, not dashboard rendering or database internals. The backend wire contract is unchanged.
 
 A periodic ACK triggers immediate durable ACK flushing and reopens selection after persistence. The next periodic record can therefore proceed while a slower independent EVIDENCE request is still running, without overlapping periodic requests or bypassing durable confirmation.
+
+
+The storage owner remains one thread and retains every file/directory synchronization barrier. Pending PERIODIC registration and its ACK writes have priority over queued background work; selection has the next priority. After four urgent operations, the oldest background operation gets a turn. Priority does not interrupt an already-running filesystem operation or change durability ordering. Recent operations whose queue or execution time exceeded 250 ms are exposed in a bounded 16-entry local diagnostic ring without payloads. This is measurement, not a relaxed health criterion.

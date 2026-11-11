@@ -133,7 +133,12 @@ class DeliveryWorker:
                 ack_batch = acknowledgements[:8]
                 del acknowledgements[: len(ack_batch)]
                 ack_task = asyncio.create_task(
-                    self.store.call("delivered_many", ack_batch, release_pins=True)
+                    self.store.call(
+                        "delivered_many",
+                        ack_batch,
+                        release_pins=True,
+                        _priority=0 if periodic_waiting else 2,
+                    )
                 )
 
         async def finish_flush():

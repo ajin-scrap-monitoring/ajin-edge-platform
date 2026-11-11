@@ -11,15 +11,15 @@ import json
 import os
 import shutil
 import time
-from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from collections import Counter, deque
 from copy import deepcopy
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
 from .contracts import validate_message
 from .processing import canonical, identifier
+from .storage_executor import StorageExecutor
 
 
 class CapacityError(RuntimeError):
@@ -80,6 +80,7 @@ class Outbox:
         self._ready_live = {"PERIODIC": [], "STATE": []}
         self._queue_version = 0
         self.operation_metrics = {}
+        self.recent_storage_stalls = deque(maxlen=16)
         self._realtime_stats = None
         self._realtime_loss = None
         self._storage_observation_epoch = 0
@@ -107,7 +108,7 @@ class Outbox:
                 **deepcopy(self.stats(audit=False)),
                 "storage_observation_epoch": 0,
             }
-            self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v2-storage")
+            self.executor = StorageExecutor()
         except BaseException:
             self.close()
             raise
@@ -134,11 +135,17 @@ class Outbox:
         if not self.lock.closed:
             self.lock.close()
 
-    async def call(self, method, *args, **kwargs):
-        """Serialize blocking filesystem work outside the service event loop."""
-        return await asyncio.get_running_loop().run_in_executor(
-            self.executor, partial(self._timed_call, method, time.monotonic(), args, kwargs)
+    async def call(self, method, *args, _priority=None, **kwargs):
+        """One durable writer; periodic work can pass queued background work."""
+        priority = 2 if _priority is None else _priority
+        if method == "enqueue" and args and args[0].get("delivery_kind") == "PERIODIC":
+            priority = 0
+        elif method == "next_ordered_many":
+            priority = 1
+        future = self.executor.submit_priority(
+            priority, partial(self._timed_call, method, time.monotonic(), args, kwargs)
         )
+        return await asyncio.wrap_future(future)
 
     def _timed_call(self, method, queued, args, kwargs):
         started = time.monotonic()
@@ -176,10 +183,21 @@ class Outbox:
                 total_elapsed = (time.monotonic() - started) * 1000
                 metric["run_ms"] += total_elapsed - elapsed
                 metric["max_run_ms"] = max(metric["max_run_ms"], total_elapsed)
+                if max(total_elapsed, wait) >= 250:
+                    self.recent_storage_stalls.append(
+                        {
+                            "method": method,
+                            "completed_at": datetime.now(UTC).isoformat(),
+                            "run_ms": total_elapsed,
+                            "queue_ms": wait,
+                            "completed": completed,
+                        }
+                    )
                 if not completed:
                     self._storage_observation_epoch += 1
                 if completed:
                     snapshot["storage_metrics"] = deepcopy(self.operation_metrics)
+                    snapshot["recent_storage_stalls"] = deepcopy(list(self.recent_storage_stalls))
                     snapshot["storage_observation_epoch"] = self._storage_observation_epoch
                     self._realtime_stats = snapshot
                 else:
@@ -998,6 +1016,7 @@ class Outbox:
             self._audit_usage()
         return {
             "storage_metrics": deepcopy(self.operation_metrics),
+            "recent_storage_stalls": deepcopy(list(self.recent_storage_stalls)),
             "pending_messages": self._state_counts["pending"],
             "pending_bytes": self._pending_bytes,
             "quarantined_messages": self._state_counts["quarantine"],
