@@ -84,6 +84,31 @@ class DeliveryClient:
         metric["max_elapsed_ms"] = max(metric["max_elapsed_ms"], elapsed)
         outcome = result.reason or result.kind
         metric["results"][outcome] = metric["results"].get(outcome, 0) + 1
+        if result.kind == "accepted" and kind in ("PERIODIC", "STATE"):
+            generated = payload.get("generated_at")
+            if generated is not None and (
+                "latest_accepted_generated_at" not in metric
+                or datetime.fromisoformat(generated)
+                >= datetime.fromisoformat(metric["latest_accepted_generated_at"])
+            ):
+                metric["latest_accepted_generated_at"] = generated
+                metric["latest_accepted_observed_at"] = datetime.now(UTC).isoformat()
+        if result.kind == "accepted" and kind == "PERIODIC":
+            sensors = metric.setdefault("latest_accepted_sensors", {})
+            for sensor in payload.get("sensors", []):
+                scan = sensor.get("scan")
+                if scan is None:
+                    continue
+                sid = sensor["sensor_id"]
+                acquired = scan["acquired_at"]
+                if sid not in sensors or datetime.fromisoformat(acquired) >= datetime.fromisoformat(
+                    sensors[sid]["acquired_at"]
+                ):
+                    sensors[sid] = {
+                        "acquired_at": acquired,
+                        "generated_at": payload["generated_at"],
+                        "observed_at": datetime.now(UTC).isoformat(),
+                    }
         return result
 
     async def _send(self, payload):

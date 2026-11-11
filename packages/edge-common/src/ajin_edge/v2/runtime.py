@@ -24,6 +24,7 @@ from .auxiliary_storage import STATUS_RESERVE, auxiliary_bytes
 from .configuration_state import control_path, effective_runtime
 from .contracts import validate_message
 from .ipc import OBSERVATIONS, OPTIONS, DeliveryStub, ObservationBroker, serve_delivery
+from .loss_recovery import OutboxLossRecovery
 from .orchestration import ConfigurationGate, Orchestrator
 from .outbox import CapacityError, Outbox
 from .processing import ProcessingEngine, canonical, identifier, utc_now
@@ -375,7 +376,7 @@ class LossTracker:
         return since is not None and now - since < self.recovery_seconds
 
 
-def service_snapshots(config, *, loss_tracker=None, now=None):
+def service_snapshots(config, *, loss_tracker=None, now=None, identities=None):
     loss_tracker = loss_tracker if loss_tracker is not None else LossTracker()
     now = time.monotonic() if now is None else now
     expected = [
@@ -384,6 +385,8 @@ def service_snapshots(config, *, loss_tracker=None, now=None):
     result = []
     registration = config["configuration"]
     for name in expected:
+        if identities is not None:
+            identities[name] = None
         item = {
             "service": name,
             "state": "UNKNOWN",
@@ -404,6 +407,8 @@ def service_snapshots(config, *, loss_tracker=None, now=None):
                 or not 0 <= age <= 15
             ):
                 raise ValueError("stale or foreign status")
+            if identities is not None:
+                identities[name] = source.get("instance_id")
             item.update(
                 state=source["state"],
                 last_progress_at=source.get("last_progress_at"),
@@ -429,9 +434,54 @@ def service_snapshots(config, *, loss_tracker=None, now=None):
     return result
 
 
+def recovery_delivery_healthy(config, *, now=None):
+    """Local proof of current raw/judgment delivery, not just old backlog ACKs."""
+    now = datetime.now(UTC) if now is None else now
+    try:
+        path = Path(config["status_dir"]) / "measurement-uplink.json"
+        if path.stat().st_size > 65536:
+            return False
+        source = json.loads(path.read_bytes())
+        if source["state"] != "HEALTHY" or any(
+            source[k] != config["configuration"][k]
+            for k in ("site_id", "edge_id", "config_revision")
+        ):
+            return False
+        stamps = [source["reported_at"]]
+        for kind in ("PERIODIC", "STATE"):
+            metric = source["http_delivery"][kind]
+            stamps.extend(
+                [metric["latest_accepted_generated_at"], metric["latest_accepted_observed_at"]]
+            )
+        for sensor in config["configuration"]["sensors"]:
+            proof = source["http_delivery"]["PERIODIC"]["latest_accepted_sensors"][
+                sensor["sensor_id"]
+            ]
+            stamps.extend([proof["generated_at"], proof["observed_at"], proof["acquired_at"]])
+        return all(0 <= (now - datetime.fromisoformat(at)).total_seconds() <= 15 for at in stamps)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def previous_loss_high_water(config):
+    # Carry the diagnostic high-water mark across restarts, never timer credit.
+    try:
+        path = Path(config["status_dir"]) / "edge-orchestrator.json"
+        if path.stat().st_size > 65536:
+            return 0
+        source = json.loads(path.read_bytes())
+        if any(source[k] != config["configuration"][k] for k in ("site_id", "edge_id")):
+            return 0
+        value = source.get("loss_recovery", {}).get("loss_high_water", 0)
+        return value if type(value) is int and value >= 0 else 0
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+
+
 async def orchestrator(config, stop):
     registration = config["configuration"]
     orch, gate = Orchestrator(registration), ConfigurationGate()
+    orch.loss_recovery = OutboxLossRecovery(previous_loss_high_water(config))
     status = LocalStatus(config, "edge-orchestrator")
     service_losses, observation_losses = LossTracker(), LossTracker()
     observation_count = 0
@@ -492,10 +542,21 @@ async def orchestrator(config, stop):
                     status.reason = ""
                 try:
                     stats = await client.stats()
+                    identities = {}
+                    services = service_snapshots(
+                        config, loss_tracker=service_losses, now=start, identities=identities
+                    )
                     snapshot = orch.status(
                         stats,
-                        service_snapshots(config, loss_tracker=service_losses, now=start),
+                        services,
                         now_ns=time.monotonic_ns(),
+                        recovery_context={
+                            "healthy": recovery_delivery_healthy(config)
+                            and all(v for k, v in identities.items() if k != "camera-edge"),
+                            "epoch": tuple(
+                                sorted((k, v) for k, v in identities.items() if k != "camera-edge")
+                            ),
+                        },
                     )
                     signature = canonical(
                         {
@@ -515,8 +576,11 @@ async def orchestrator(config, stop):
                         last_status, fingerprint = start, signature
                 except grpc.aio.AioRpcError:
                     status.reason = "LOCAL_DELIVERY_UNAVAILABLE"
+                    orch.loss_recovery.interrupt()
                 status.write(
-                    "DEGRADED" if status.reason else "HEALTHY", observations=orch.observations
+                    "DEGRADED" if status.reason else "HEALTHY",
+                    observations=orch.observations,
+                    loss_recovery=orch.loss_recovery.snapshot(time.monotonic()),
                 )
                 await asyncio.sleep(max(0, 1 - (time.monotonic() - start)))
 
