@@ -74,6 +74,7 @@ class Outbox:
         self._file_allocations = {}
         self._allocated_bytes = 0
         self._usage_valid = False
+        self._last_usage_audit = float("-inf")
         try:
             if (self.root / "metadata.json").exists():
                 self.meta = json.loads((self.root / "metadata.json").read_bytes())
@@ -143,7 +144,7 @@ class Outbox:
         return self._spool_bytes() + self.external_usage()
 
     def _spool_bytes(self):
-        if not self._usage_valid:
+        if not self._usage_valid or time.monotonic() - self._last_usage_audit >= 60:
             self._audit_usage()
         return self._allocated_bytes
 
@@ -164,6 +165,7 @@ class Outbox:
         self._file_allocations = allocations
         self._allocated_bytes = sum(allocations.values())
         self._usage_valid = True
+        self._last_usage_audit = time.monotonic()
 
     def _track_allocation(self, path):
         try:
@@ -532,12 +534,13 @@ class Outbox:
         excluded = self.inflight | set(exclude)
         while self._spool_bytes() + needed > self.limit - self.external_reserve - self.reserve:
             active, referenced = self._protected(now)
+            protected = active | referenced
             candidates = [
                 (mid, item)
                 for mid, item in self.index.items()
                 if mid not in excluded
                 and item["delivery_kind"] == "PERIODIC"
-                and not item["scans"] & (active | referenced)
+                and not item["scans"] & protected
             ]
             if not candidates:
                 candidates = [
@@ -553,7 +556,7 @@ class Outbox:
                     for mid, item in self.index.items()
                     if mid not in excluded
                     and item["delivery_kind"] == "EVIDENCE"
-                    and not item["scans"] & (active | referenced)
+                    and not item["scans"] & protected
                 ]
             if not candidates:
                 raise CapacityError("only protected records remain")
@@ -652,9 +655,10 @@ class Outbox:
         for item in items.values():
             item["state"] = "acked"
         active, referenced = self._protected(now)
+        protected = active | referenced
         changed = False
         for mid, item in items.items():
-            if not item["scans"] & (active | referenced):
+            if not item["scans"] & protected:
                 self._delete(mid, sync=False)
                 changed = True
         changed = self.collect(now=now, sync=False) or changed
@@ -684,12 +688,13 @@ class Outbox:
                 del self.meta["leases"][owner]
             self._save_meta()
         active, referenced = self._protected(now)
+        protected = active | referenced
         changed = False
         for mid, item in list(self.index.items()):
             if (
                 mid not in self.inflight
                 and item["state"] == "acked"
-                and not item["scans"] & (active | referenced)
+                and not item["scans"] & protected
             ):
                 self._delete(mid, sync=False)
                 changed = True
@@ -697,8 +702,12 @@ class Outbox:
             self._sync_directory()
         return changed
 
-    def stats(self):
-        self._audit_usage()
+    def stats(self, *, audit=True):
+        # Administrative callers can force reconciliation. Frequent runtime
+        # reports use incrementally tracked allocations, audited at most 60s
+        # apart by _spool_bytes (also checked before every physical write).
+        if audit:
+            self._audit_usage()
         pending = [item for item in self.index.values() if item["state"] == "pending"]
         return {
             "pending_messages": len(pending),

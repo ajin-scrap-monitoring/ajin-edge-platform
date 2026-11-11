@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 import pytest
-from ajin_edge.v2.outbox import Outbox
+from ajin_edge.v2.outbox import CapacityError, Outbox
 from ajin_edge.v2.processing import envelope
 from test_v2_contracts import message
 from test_v2_processing import configuration
@@ -15,6 +15,68 @@ def actual_usage(root):
             info = path.stat()
             total += max(Outbox._allocation(info.st_size), getattr(info, "st_blocks", 0) * 512)
     return total
+
+
+def test_reference_protection_does_not_copy_large_sets_for_each_record(tmp_path, monkeypatch):
+    # Catch quadratic reference-set copying while retaining ACKed evidence.
+    class CountedSet(set):
+        copies = 0
+
+        def __or__(self, other):
+            self.copies += 1
+            return super().__or__(other)
+
+    with Outbox(tmp_path) as store:
+        bodies = [message() for _ in range(80)]
+        for body in bodies:
+            store.enqueue(body)
+        scan = bodies[0]["sensors"][0]["scan"]["scan_id"]
+        store.protect("judgment", [scan], expires_at=10**12)
+        for body in bodies:
+            store.index[body["message_id"]]["state"] = "acked"
+        original = store._protected
+        active = CountedSet()
+
+        def protected(now=None):
+            a, r = original(now)
+            active.clear()
+            active.update(a)
+            return active, r | {f"reference-{i}" for i in range(30000)}
+
+        monkeypatch.setattr(store, "_protected", protected)
+        store.collect()
+        assert len(store.index) == 80  # Still protected, not deleted for speed.
+        assert active.copies <= 2, "reference sets copied once per ACKed record"
+        active.copies = 0
+        store.limit = store.used_bytes() + store.reserve
+        with pytest.raises(CapacityError):
+            store._make_room(4096)
+        assert len(store.index) == 80
+        assert active.copies <= 4, "capacity search copied references per candidate"
+
+
+def test_frequent_status_reads_reuse_accounting_but_eventually_reconcile(tmp_path, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("ajin_edge.v2.outbox.time.monotonic", lambda: now[0])
+    with Outbox(tmp_path) as store:
+        body = message()
+        store.enqueue(body)
+        original = os.scandir
+        audits = []
+
+        def scandir(path):
+            if Path(path) == tmp_path:
+                audits.append(now[0])
+            return original(path)
+
+        monkeypatch.setattr("ajin_edge.v2.outbox.os.scandir", scandir)
+        for _ in range(20):
+            assert store.stats(audit=False)["pending_messages"] == 1
+        assert len(audits) <= 1
+        (tmp_path / "orphan.tmp").write_bytes(b"x" * 8193)
+        now[0] += 61
+        assert store.stats(audit=False)["used_bytes"] == actual_usage(tmp_path)
+        assert len(audits) >= 1
 
 
 def test_writing_and_acking_do_not_rescan_every_queued_file(tmp_path, monkeypatch):
