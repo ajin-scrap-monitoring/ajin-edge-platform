@@ -33,7 +33,8 @@ def test_status_is_atomic_and_old_or_wrong_identity_becomes_unknown(tmp_path):
     writer = StatusWriter(tmp_path, "lidar-driver-a", "edge-1", "rev-1")
     writer.write("HEALTHY", scans=5)
     path = tmp_path / "lidar-driver-a.json"
-    now = datetime.now(UTC)
+    # Disk flush latency must not move the freshness boundary under test.
+    now = datetime.fromisoformat(json.loads(path.read_text())["reported_at"])
     assert read_status(path, now=now)["state"] == "HEALTHY"
     assert read_status(path, now=now + timedelta(seconds=31))["state"] == "UNKNOWN"
     assert read_status(path, now=now - timedelta(seconds=2))["state"] == "UNKNOWN"
