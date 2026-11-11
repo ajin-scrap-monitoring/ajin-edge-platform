@@ -400,10 +400,15 @@ def service_snapshots(config, *, loss_tracker=None, now=None, identities=None):
             source = json.loads(path.read_bytes())
             reported = datetime.fromisoformat(source["reported_at"])
             age = (datetime.now(UTC) - reported).total_seconds()
+            expected_revision = (
+                config.get("driver_config_revision", registration["config_revision"])
+                if name.startswith("lidar-driver-")
+                else registration["config_revision"]
+            )
             if (
                 source["edge_id"] != registration["edge_id"]
                 or source["site_id"] != registration["site_id"]
-                or source["config_revision"] != registration["config_revision"]
+                or source["config_revision"] != expected_revision
                 or not 0 <= age <= 15
             ):
                 raise ValueError("stale or foreign status")

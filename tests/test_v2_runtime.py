@@ -234,6 +234,34 @@ def test_local_backlog_loss_reason_recovers_while_count_is_preserved(tmp_path, m
     assert body["reason_codes"] == []
 
 
+def test_driver_status_uses_acquisition_revision_after_calibration_update(tmp_path):
+    from copy import deepcopy
+
+    from ajin_edge.v2.runtime import LocalStatus, service_snapshots
+    from test_v2_processing import configuration
+
+    config = {
+        "configuration": configuration(),
+        "status_dir": str(tmp_path),
+        "drivers": {"lidar-a": "a", "lidar-b": "b"},
+        "driver_config_revision": "acquisition-v1",
+    }
+    driver_config = deepcopy(config)
+    driver_config["configuration"]["config_revision"] = "acquisition-v1"
+    driver = LocalStatus(driver_config, "lidar-driver-a")
+    driver.write()
+    LocalStatus(driver_config, "lidar-processing").write()
+    identities = {}
+    result = {s["service"]: s for s in service_snapshots(config, identities=identities)}
+    assert result["lidar-driver-a"]["state"] == "HEALTHY"
+    assert identities["lidar-driver-a"] == driver.instance_id
+    assert result["lidar-processing"]["state"] == "UNKNOWN"
+    driver_config["configuration"]["config_revision"] = "unexpected-revision"
+    driver.write()
+    result = {s["service"]: s for s in service_snapshots(config)}
+    assert result["lidar-driver-a"]["state"] == "UNKNOWN"
+
+
 def test_service_snapshots_do_not_latch_historical_loss_or_clear_other_faults(tmp_path):
     from ajin_edge.v2.runtime import LocalStatus, LossTracker, service_snapshots
     from test_v2_processing import configuration
