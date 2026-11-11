@@ -104,11 +104,12 @@ class DeliveryWorker:
                 )
 
         async def finish_flush():
-            nonlocal ack_task, ack_batch
+            nonlocal ack_task, ack_batch, selection_exhausted
             await asyncio.shield(ack_task)
             for mid, _ in ack_batch:
                 rows.pop(mid, None)
             ack_task, ack_batch = None, []
+            selection_exhausted = False
 
         async def drain_acks():
             if ack_task is not None:
@@ -157,6 +158,7 @@ class DeliveryWorker:
                     ready.extend(batch)
                     rows.update((r["payload"]["message_id"], r) for r in batch)
                 errors = []
+                periodic_accepted = False
                 for task in done:
                     payload, is_status = tasks.pop(task)
                     try:
@@ -171,6 +173,7 @@ class DeliveryWorker:
                         progress.append(result.received_at)
                         if not is_status:
                             acknowledgements.append((payload["message_id"], result.received_at))
+                            periodic_accepted |= payload.get("delivery_kind") == "PERIODIC"
                     elif result.kind == "auth":
                         self.blocked_token = self.transport.token
                         stopped = True
@@ -191,7 +194,7 @@ class DeliveryWorker:
                     ):
                         self.latest_status.clear()
                 refill()
-                start_flush(force=not tasks or bool(errors))
+                start_flush(force=not tasks or bool(errors) or periodic_accepted)
                 start_selection()
                 if errors:
                     await drain_acks()

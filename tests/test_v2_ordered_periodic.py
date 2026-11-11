@@ -143,3 +143,31 @@ def test_state_backlog_does_not_starve_old_evidence(tmp_path):
             store.enqueue(bundle[-1])
         rows = store.next_ordered_many()
         assert old["message_id"] in [r["payload"]["message_id"] for r in rows]
+
+
+async def test_next_periodic_does_not_wait_for_slow_evidence_ack(tmp_path):
+    from test_v2_delivery_batch import message as evidence
+
+    bodies = [message(), message()]
+    other = evidence()
+    release, second = asyncio.Event(), asyncio.Event()
+
+    class Transport:
+        token = "test"
+
+        async def send(self, body):
+            if body["message_id"] == other["message_id"]:
+                await release.wait()
+            if body["message_id"] == bodies[1]["message_id"]:
+                second.set()
+            return Result("accepted", received_at="2026-09-20T01:00:00Z")
+
+    with Outbox(tmp_path) as store:
+        for body in [*bodies, other]:
+            store.enqueue(body)
+        task = asyncio.create_task(DeliveryWorker(store, Transport()).step())
+        try:
+            await asyncio.wait_for(second.wait(), 0.5)
+        finally:
+            release.set()
+            await task
