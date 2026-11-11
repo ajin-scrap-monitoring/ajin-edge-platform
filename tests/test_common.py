@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from ajin_edge.clock import classify_clock, probe_chrony, read_clock
