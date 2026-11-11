@@ -130,6 +130,169 @@
               "maxLength": 128
             },
             "uniqueItems": true
+          },
+          "scan_update_alarm": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "enum": [
+                  "UNKNOWN",
+                  "CLEAR",
+                  "PENDING",
+                  "ACTIVE",
+                  "RECOVERING"
+                ]
+              },
+              "active": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "scan_age_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "last_valid_scan_at": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "(Z|\\+00:00)$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "confirm_after_ms": {
+                "const": 3000
+              },
+              "reason_codes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "state",
+              "active",
+              "scan_age_ms",
+              "last_valid_scan_at",
+              "confirm_after_ms",
+              "reason_codes"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "state": {
+                      "const": "UNKNOWN"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "active": {
+                      "const": null
+                    },
+                    "reason_codes": {
+                      "const": []
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "state": {
+                      "const": "CLEAR"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "active": {
+                      "const": false
+                    },
+                    "reason_codes": {
+                      "const": []
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "state": {
+                      "const": "PENDING"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "active": {
+                      "const": false
+                    },
+                    "reason_codes": {
+                      "const": [
+                        "SCAN_UPDATE_DELAY_PENDING"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "state": {
+                      "const": "ACTIVE"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "active": {
+                      "const": true
+                    },
+                    "reason_codes": {
+                      "const": [
+                        "SCAN_UPDATE_DELAY_CONFIRMED"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "state": {
+                      "const": "RECOVERING"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "active": {
+                      "const": true
+                    },
+                    "reason_codes": {
+                      "const": [
+                        "SCAN_UPDATE_RECOVERING"
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
           }
         },
         "required": [

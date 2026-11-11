@@ -34,6 +34,8 @@ from .worker import DeliveryWorker
 
 def load_runtime(path, *, apply_control=True):
     config = json.loads(Path(path).read_text(encoding="utf-8"))
+    if type(config.get("scan_update_alarm_enabled", False)) is not bool:
+        raise ValueError("scan_update_alarm_enabled must be boolean")
     registration = config["configuration"]
     validate_message(registration)
     if registration["message_type"] != "edge_configuration":
@@ -485,7 +487,12 @@ def previous_loss_high_water(config):
 
 async def orchestrator(config, stop):
     registration = config["configuration"]
-    orch, gate = Orchestrator(registration), ConfigurationGate()
+    orch, gate = (
+        Orchestrator(
+            registration, scan_update_alarm_enabled=config.get("scan_update_alarm_enabled", False)
+        ),
+        ConfigurationGate(),
+    )
     orch.loss_recovery = OutboxLossRecovery(previous_loss_high_water(config))
     status = LocalStatus(config, "edge-orchestrator")
     service_losses, observation_losses = LossTracker(), LossTracker()
@@ -568,7 +575,12 @@ async def orchestrator(config, stop):
                             "overall_state": snapshot["overall_state"],
                             "reason_codes": snapshot["reason_codes"],
                             "sensors": [
-                                (s["sensor_id"], s["data_state"]) for s in snapshot["sensors"]
+                                (
+                                    s["sensor_id"],
+                                    s["data_state"],
+                                    s.get("scan_update_alarm", {}).get("state"),
+                                )
+                                for s in snapshot["sensors"]
                             ],
                             "services": [
                                 (s["service"], s["state"], s["reason_codes"])
@@ -586,6 +598,8 @@ async def orchestrator(config, stop):
                     "DEGRADED" if status.reason else "HEALTHY",
                     observations=orch.observations,
                     loss_recovery=orch.loss_recovery.snapshot(time.monotonic()),
+                    scan_update_alarms=orch.scan_update_alarms(now_ns=time.monotonic_ns()),
+                    scan_update_alarm_enabled=orch.scan_update_alarm_enabled,
                 )
                 await asyncio.sleep(max(0, 1 - (time.monotonic() - start)))
 

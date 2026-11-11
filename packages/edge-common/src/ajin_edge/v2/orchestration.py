@@ -10,6 +10,7 @@ from .contracts import validate_message
 from .judgment import SectionJudgment, fill_enabled, is_independent
 from .loss_recovery import OutboxLossRecovery
 from .processing import canonical, copy_observation, envelope, utc_now, validate_configuration
+from .scan_update_alarm import ScanUpdateAlarm
 
 
 class ConfigurationGate:
@@ -57,7 +58,7 @@ class ConfigurationGate:
 
 
 class Orchestrator:
-    def __init__(self, config, *, enabled_rules=()):
+    def __init__(self, config, *, enabled_rules=(), scan_update_alarm_enabled=False):
         validate_configuration(config)
         self.config = deepcopy(config)
         self.instance_id = str(uuid4())
@@ -78,6 +79,8 @@ class Orchestrator:
         self.judgment = SectionJudgment(self.config)
         self.loss_recovery = OutboxLossRecovery()
         self.recovery_evidence = None
+        self.scan_update_alarm_enabled = scan_update_alarm_enabled
+        self.scan_alarms = {sensor: ScanUpdateAlarm() for sensor in self.sensors}
 
     def ingest(self, observation, *, now_ns):
         sensor = self.sensors[observation["sensor_id"]]
@@ -87,6 +90,9 @@ class Orchestrator:
         acquired = int(scan["acquired_monotonic_ns"])
         if acquired > now_ns or (sensor["ns"] is not None and acquired <= sensor["ns"]):
             return False
+        self.scan_alarms[observation["sensor_id"]].ingest(
+            acquired, scan["acquired_at"], now_ns=now_ns
+        )
         self._state(sensor, now_ns)
         if sensor["stalled"]:
             sensor["recovering_since"] = acquired
@@ -112,6 +118,9 @@ class Orchestrator:
                 return "RECOVERING"
             sensor["recovering_since"] = None
         return "FRESH"
+
+    def scan_update_alarms(self, *, now_ns):
+        return {sensor: alarm.snapshot(now_ns=now_ns) for sensor, alarm in self.scan_alarms.items()}
 
     def sensor_states(self, *, now_ns):
         result = []
@@ -316,6 +325,10 @@ class Orchestrator:
     def status(self, stats, services, *, now_ns, clock=None, recovery_context=None):
         self.sequence += 1
         sensors = self.sensor_states(now_ns=now_ns)
+        alarms = self.scan_update_alarms(now_ns=now_ns)
+        if self.scan_update_alarm_enabled:
+            for sensor in sensors:
+                sensor["scan_update_alarm"] = alarms[sensor["sensor_id"]]
         states = {s["data_state"] for s in sensors}
         reasons = sorted({r for s in sensors for r in s["reason_codes"]})
         service_problem = any(s["state"] != "HEALTHY" for s in services)
