@@ -69,6 +69,8 @@ class Outbox:
             "receipts": {},
         }
         self.index = {}
+        self._acked = set()
+        self._reference_cache = None
         self.inflight = set()
         self.executor = None
         self._file_allocations = {}
@@ -259,6 +261,13 @@ class Outbox:
             generated_at=payload["generated_at"],
             payload_bytes=len(canonical(payload)) if payload_bytes is None else payload_bytes,
         )
+        mid = payload["message_id"]
+        if record["state"] == "acked":
+            self._acked.add(mid)
+        else:
+            self._acked.discard(mid)
+        if payload["message_type"] == "edge_assessment":
+            self._reference_cache = None
 
     def get(self, message_id):
         item = self.index.get(message_id)
@@ -513,18 +522,22 @@ class Outbox:
             if lease["expires_at"] > now
             for scan in lease["scans"]
         }
-        referenced = {
-            scan
-            for item in self.index.values()
-            if item["kind"] == "edge_assessment" and item["state"] != "acked"
-            for scan in item["scans"]
-        }
-        return active, referenced
+        if self._reference_cache is None:
+            self._reference_cache = {
+                scan
+                for item in self.index.values()
+                if item["kind"] == "edge_assessment" and item["state"] != "acked"
+                for scan in item["scans"]
+            }
+        return active, self._reference_cache
 
     def _delete(self, mid, *, sync=True):
         path = self.index[mid]["path"]
         path.unlink()
         self._forget_allocation(path)
+        if self.index[mid]["kind"] == "edge_assessment":
+            self._reference_cache = None
+        self._acked.discard(mid)
         del self.index[mid]
         if sync:
             self._sync_directory()
@@ -642,6 +655,9 @@ class Outbox:
                         # The filesystem move has happened even if inspecting
                         # its allocation fails; keep retries pointed at the body.
                         retained.update(path=target, state="acked")
+                        self._acked.add(oldest)
+                        if retained["kind"] == "edge_assessment":
+                            self._reference_cache = None
                         self._forget_allocation(path)
                         self._track_allocation(target)
                     self._sync_directory()
@@ -652,8 +668,11 @@ class Outbox:
             raise
         # The fsynced receipt is authoritative across restart; do not rewrite
         # a large protected scan for every successful HTTP acknowledgement.
-        for item in items.values():
+        for mid, item in items.items():
             item["state"] = "acked"
+            self._acked.add(mid)
+            if item["kind"] == "edge_assessment":
+                self._reference_cache = None
         active, referenced = self._protected(now)
         protected = active | referenced
         changed = False
@@ -690,7 +709,8 @@ class Outbox:
         active, referenced = self._protected(now)
         protected = active | referenced
         changed = False
-        for mid, item in list(self.index.items()):
+        for mid in tuple(self._acked):
+            item = self.index[mid]
             if (
                 mid not in self.inflight
                 and item["state"] == "acked"

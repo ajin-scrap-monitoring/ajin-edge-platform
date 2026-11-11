@@ -33,7 +33,7 @@ def test_reference_protection_does_not_copy_large_sets_for_each_record(tmp_path,
         scan = bodies[0]["sensors"][0]["scan"]["scan_id"]
         store.protect("judgment", [scan], expires_at=10**12)
         for body in bodies:
-            store.index[body["message_id"]]["state"] = "acked"
+            store.delivered(body["message_id"], "2026-11-10T00:00:00Z")
         original = store._protected
         active = CountedSet()
 
@@ -77,6 +77,47 @@ def test_frequent_status_reads_reuse_accounting_but_eventually_reconcile(tmp_pat
         now[0] += 61
         assert store.stats(audit=False)["used_bytes"] == actual_usage(tmp_path)
         assert len(audits) >= 1
+
+
+def test_repeated_collection_does_not_walk_pending_backlog(tmp_path):
+    class CountedIndex(dict):
+        walks = 0
+
+        def items(self):
+            self.walks += 1
+            return super().items()
+
+        def values(self):
+            self.walks += 1
+            return super().values()
+
+    with Outbox(tmp_path) as store:
+        for _ in range(40):
+            store.enqueue(message())
+        store.index = CountedIndex(store.index)
+        for _ in range(30):
+            store.collect()
+        assert len(store.index) == 40
+        assert store.index.walks <= 2, "collection repeatedly walks all pending messages"
+
+
+def test_reference_cache_tracks_judgment_ack_and_restart(tmp_path):
+    from test_v2_judgment_delivery import judgment_bundle
+
+    bundle = judgment_bundle()
+    evidence, assessment = bundle[:-1], bundle[-1]
+    with Outbox(tmp_path) as store:
+        store.collect()  # Warm an empty reference view before inserting a judgment.
+        store.enqueue_bundle(bundle)
+        for body in evidence:
+            store.delivered(body["message_id"], "2026-11-10T00:00:00Z")
+        store.collect()
+        assert all(store.get(body["message_id"]) is not None for body in evidence)
+    with Outbox(tmp_path) as store:
+        store.collect()
+        assert all(store.get(body["message_id"]) is not None for body in evidence)
+        store.delivered(assessment["message_id"], "2026-11-10T00:00:01Z")
+        assert not store.index
 
 
 def test_writing_and_acking_do_not_rescan_every_queued_file(tmp_path, monkeypatch):
