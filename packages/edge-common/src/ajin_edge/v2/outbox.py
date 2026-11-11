@@ -6,10 +6,12 @@ No SQLite WAL, implicit v1 migration, or time-based expiry of pending messages.
 
 import asyncio
 import hashlib
+import heapq
 import json
 import os
 import shutil
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime
@@ -69,11 +71,20 @@ class Outbox:
             "receipts": {},
         }
         self.index = {}
+        self._state_counts = Counter()
+        self._pending_bytes = 0
+        self._acked = set()
+        self._reference_cache = None
+        self._ready_old, self._ready_new, self._ready_config = [], [], []
+        self._ready_live = {"PERIODIC": [], "STATE": []}
+        self._queue_version = 0
+        self.operation_metrics = {}
         self.inflight = set()
         self.executor = None
         self._file_allocations = {}
         self._allocated_bytes = 0
         self._usage_valid = False
+        self._last_usage_audit = float("-inf")
         try:
             if (self.root / "metadata.json").exists():
                 self.meta = json.loads((self.root / "metadata.json").read_bytes())
@@ -117,8 +128,31 @@ class Outbox:
     async def call(self, method, *args, **kwargs):
         """Serialize blocking filesystem work outside the service event loop."""
         return await asyncio.get_running_loop().run_in_executor(
-            self.executor, partial(getattr(self, method), *args, **kwargs)
+            self.executor, partial(self._timed_call, method, time.monotonic(), args, kwargs)
         )
+
+    def _timed_call(self, method, queued, args, kwargs):
+        started = time.monotonic()
+        try:
+            return getattr(self, method)(*args, **kwargs)
+        finally:
+            elapsed = (time.monotonic() - started) * 1000
+            wait = (started - queued) * 1000
+            metric = self.operation_metrics.setdefault(
+                method,
+                {
+                    "calls": 0,
+                    "run_ms": 0.0,
+                    "queue_ms": 0.0,
+                    "max_run_ms": 0.0,
+                    "max_queue_ms": 0.0,
+                },
+            )
+            metric["calls"] += 1
+            metric["run_ms"] += elapsed
+            metric["queue_ms"] += wait
+            metric["max_run_ms"] = max(metric["max_run_ms"], elapsed)
+            metric["max_queue_ms"] = max(metric["max_queue_ms"], wait)
 
     def inspect(self, mid):
         item = self.index.get(mid)
@@ -143,7 +177,7 @@ class Outbox:
         return self._spool_bytes() + self.external_usage()
 
     def _spool_bytes(self):
-        if not self._usage_valid:
+        if not self._usage_valid or time.monotonic() - self._last_usage_audit >= 60:
             self._audit_usage()
         return self._allocated_bytes
 
@@ -164,6 +198,7 @@ class Outbox:
         self._file_allocations = allocations
         self._allocated_bytes = sum(allocations.values())
         self._usage_valid = True
+        self._last_usage_audit = time.monotonic()
 
     def _track_allocation(self, path):
         try:
@@ -246,17 +281,110 @@ class Outbox:
                 raise ValueError("persisted ACK conflicts with record")
             if record["state"] == "pending":
                 record = {**record, "state": "acked"}
-        self.index[payload["message_id"]] = {
-            key: value for key, value in record.items() if key != "payload"
-        }
-        self.index[payload["message_id"]].update(
+        item = {key: value for key, value in record.items() if key != "payload"}
+        item.update(
             path=path,
             kind=payload["message_type"],
             delivery_kind=payload.get("delivery_kind"),
+            assessment_type=payload.get("assessment_type"),
             scans=self._scans(payload),
             generated_at=payload["generated_at"],
             payload_bytes=len(canonical(payload)) if payload_bytes is None else payload_bytes,
         )
+        mid = payload["message_id"]
+        if mid in self.index:
+            self._count_item(self.index[mid], -1)
+        self.index[mid] = item
+        self._count_item(item, 1)
+        if record["state"] == "acked":
+            self._acked.add(mid)
+        else:
+            self._acked.discard(mid)
+        if payload["message_type"] == "edge_assessment":
+            self._reference_cache = None
+        if record["state"] == "pending":
+            self._queue_pending(mid)
+
+    def _count_item(self, item, direction):
+        self._state_counts[item["state"]] += direction
+        if item["state"] == "pending":
+            self._pending_bytes += direction * item["payload_bytes"]
+
+    def _mark_acked(self, mid, item):
+        if item["state"] != "acked":
+            self._count_item(item, -1)
+            item["state"] = "acked"
+            self._count_item(item, 1)
+        self._acked.add(mid)
+        if item["kind"] == "edge_assessment":
+            self._reference_cache = None
+
+    def _queue_pending(self, mid):
+        item = self.index[mid]
+        self._queue_version += 1
+        item["queue_version"] = self._queue_version
+        entry = (item["order"], self._queue_version, mid)
+        heapq.heappush(self._ready_old, entry)
+        heapq.heappush(self._ready_new, (-entry[0], entry[1], mid))
+        if item["kind"] == "edge_configuration":
+            heapq.heappush(self._ready_config, entry)
+        live_kind = item["delivery_kind"] or item["assessment_type"]
+        if live_kind in self._ready_live:
+            heapq.heappush(self._ready_live[live_kind], (-entry[0], entry[1], mid))
+        self._compact_ready()
+
+    def _compact_ready(self):
+        # Lazy invalid entries are bounded, including during long retry loops.
+        if (
+            max(
+                len(heap)
+                for heap in (
+                    self._ready_old,
+                    self._ready_new,
+                    self._ready_config,
+                    *self._ready_live.values(),
+                )
+            )
+            <= 2 * len(self.index) + 64
+        ):
+            return
+        entries = [
+            (v["order"], v["queue_version"], mid)
+            for mid, v in self.index.items()
+            if v["state"] == "pending" and mid not in self.inflight
+        ]
+        self._ready_old = entries
+        self._ready_new = [(-order, version, mid) for order, version, mid in entries]
+        self._ready_config = [
+            entry for entry in entries if self.index[entry[2]]["kind"] == "edge_configuration"
+        ]
+        for kind in self._ready_live:
+            self._ready_live[kind] = [
+                (-order, version, mid)
+                for order, version, mid in entries
+                if (self.index[mid]["delivery_kind"] or self.index[mid]["assessment_type"]) == kind
+            ]
+        for heap in (
+            self._ready_old,
+            self._ready_new,
+            self._ready_config,
+            *self._ready_live.values(),
+        ):
+            heapq.heapify(heap)
+
+    def _ready(self, heap):
+        while heap:
+            _, version, mid = heap[0]
+            item = self.index.get(mid)
+            if (
+                item is not None
+                and item["state"] == "pending"
+                and item.get("queue_version") == version
+                and mid not in self.inflight
+            ):
+                return mid
+            heapq.heappop(heap)
+        return None
 
     def get(self, message_id):
         item = self.index.get(message_id)
@@ -289,7 +417,16 @@ class Outbox:
             "reason": None,
             "order": time.time_ns(),
         }
-        record_bytes = canonical(record)
+        # Reuse exactly the validated canonical payload bytes. Only the small
+        # record envelope is new; encoding its point arrays again is redundant.
+        record_bytes = (
+            b"{"
+            + b",".join(
+                canonical(key) + b":" + (encoded if key == "payload" else canonical(record[key]))
+                for key in sorted(record)
+            )
+            + b"}"
+        )
         needed = self._allocation(len(record_bytes))
         try:
             self._make_room(needed)
@@ -511,33 +648,44 @@ class Outbox:
             if lease["expires_at"] > now
             for scan in lease["scans"]
         }
-        referenced = {
-            scan
-            for item in self.index.values()
-            if item["kind"] == "edge_assessment" and item["state"] != "acked"
-            for scan in item["scans"]
-        }
-        return active, referenced
+        if self._reference_cache is None:
+            self._reference_cache = {
+                scan
+                for item in self.index.values()
+                if item["kind"] == "edge_assessment" and item["state"] != "acked"
+                for scan in item["scans"]
+            }
+        return active, self._reference_cache
 
     def _delete(self, mid, *, sync=True):
         path = self.index[mid]["path"]
         path.unlink()
         self._forget_allocation(path)
+        if self.index[mid]["kind"] == "edge_assessment":
+            self._reference_cache = None
+        self._acked.discard(mid)
+        self._count_item(self.index[mid], -1)
         del self.index[mid]
+        self._compact_ready()
         if sync:
             self._sync_directory()
 
     def _make_room(self, needed, *, exclude=(), now=None):
+        # ACK handling and the periodic collector reclaim eligible records.
+        # A write with sufficient room need not traverse protected ACKs again.
+        if self._spool_bytes() + needed <= self.limit - self.external_reserve - self.reserve:
+            return
         self.collect(now=now)
         excluded = self.inflight | set(exclude)
         while self._spool_bytes() + needed > self.limit - self.external_reserve - self.reserve:
             active, referenced = self._protected(now)
+            protected = active | referenced
             candidates = [
                 (mid, item)
                 for mid, item in self.index.items()
                 if mid not in excluded
                 and item["delivery_kind"] == "PERIODIC"
-                and not item["scans"] & (active | referenced)
+                and not item["scans"] & protected
             ]
             if not candidates:
                 candidates = [
@@ -553,7 +701,7 @@ class Outbox:
                     for mid, item in self.index.items()
                     if mid not in excluded
                     and item["delivery_kind"] == "EVIDENCE"
-                    and not item["scans"] & (active | referenced)
+                    and not item["scans"] & protected
                 ]
             if not candidates:
                 raise CapacityError("only protected records remain")
@@ -573,26 +721,54 @@ class Outbox:
         self._save_meta()
 
     def next_ready(self, *, pin=False):
-        items = [
-            (mid, item)
-            for mid, item in self.index.items()
-            if item["state"] == "pending" and mid not in self.inflight
-        ]
-        if not items:
-            return None
-        configurations = [pair for pair in items if pair[1]["kind"] == "edge_configuration"]
-        if configurations:
-            mid, _ = min(configurations, key=lambda pair: pair[1]["order"])
-        else:
-            selector = max if self.latest else min
-            mid, _ = selector(items, key=lambda pair: pair[1]["order"])
+        mid = self._ready(self._ready_config)
+        if mid is None:
+            mid = self._ready(self._ready_new if self.latest else self._ready_old)
+            if mid is None:
+                return None
             self.latest = not self.latest
         if pin:
             self.inflight.add(mid)
         return self.get(mid)
 
     def unpin(self, mid):
+        pinned = mid in self.inflight
         self.inflight.discard(mid)
+        if pinned and mid in self.index and self.index[mid]["state"] == "pending":
+            self._queue_pending(mid)
+
+    def next_ready_many(self, limit=16):
+        if type(limit) is not int or not 1 <= limit <= 16:
+            raise ValueError("invalid selection batch")
+        before = set(self.inflight)
+        rows = []
+        live = list(self._ready_live.values())
+        try:
+            for _ in range(limit):
+                mid = None
+                # Configuration stays first. Reserve one opportunity per turn
+                # for current original scans and judgments during old backlog.
+                if self._ready(self._ready_config) is None:
+                    while live and mid is None:
+                        mid = self._ready(live.pop(0))
+                if mid is None:
+                    row = self.next_ready(pin=True)
+                else:
+                    self.inflight.add(mid)
+                    row = self.get(mid)
+                if row is None:
+                    break
+                rows.append(row)
+            return rows
+        except BaseException:
+            self.unpin_many(tuple(self.inflight - before))
+            raise
+
+    def unpin_many(self, mids):
+        if len(mids) > 16:
+            raise ValueError("invalid release batch")
+        for mid in mids:
+            self.unpin(mid)
 
     def _change(self, mid, *, now=None, **changes):
         record = self.get(mid)
@@ -611,7 +787,7 @@ class Outbox:
     def delivered(self, mid, received_at, *, now=None):
         self.delivered_many([(mid, received_at)], now=now)
 
-    def delivered_many(self, receipts, *, now=None):
+    def delivered_many(self, receipts, *, now=None, release_pins=False):
         if not 1 <= len(receipts) <= 8 or len({mid for mid, _ in receipts}) != len(receipts):
             raise ValueError("invalid bounded ACK batch")
         items = {mid: self.index[mid] for mid, _ in receipts}
@@ -638,7 +814,8 @@ class Outbox:
                         os.replace(path, target)
                         # The filesystem move has happened even if inspecting
                         # its allocation fails; keep retries pointed at the body.
-                        retained.update(path=target, state="acked")
+                        retained["path"] = target
+                        self._mark_acked(oldest, retained)
                         self._forget_allocation(path)
                         self._track_allocation(target)
                     self._sync_directory()
@@ -649,12 +826,17 @@ class Outbox:
             raise
         # The fsynced receipt is authoritative across restart; do not rewrite
         # a large protected scan for every successful HTTP acknowledgement.
-        for item in items.values():
-            item["state"] = "acked"
+        for mid, item in items.items():
+            self._mark_acked(mid, item)
+            if release_pins:
+                self.inflight.discard(mid)
+            if item["kind"] == "edge_assessment":
+                self._reference_cache = None
         active, referenced = self._protected(now)
+        protected = active | referenced
         changed = False
         for mid, item in items.items():
-            if not item["scans"] & (active | referenced):
+            if not item["scans"] & protected:
                 self._delete(mid, sync=False)
                 changed = True
         changed = self.collect(now=now, sync=False) or changed
@@ -684,12 +866,14 @@ class Outbox:
                 del self.meta["leases"][owner]
             self._save_meta()
         active, referenced = self._protected(now)
+        protected = active | referenced
         changed = False
-        for mid, item in list(self.index.items()):
+        for mid in tuple(self._acked):
+            item = self.index[mid]
             if (
                 mid not in self.inflight
                 and item["state"] == "acked"
-                and not item["scans"] & (active | referenced)
+                and not item["scans"] & protected
             ):
                 self._delete(mid, sync=False)
                 changed = True
@@ -697,15 +881,17 @@ class Outbox:
             self._sync_directory()
         return changed
 
-    def stats(self):
-        self._audit_usage()
-        pending = [item for item in self.index.values() if item["state"] == "pending"]
+    def stats(self, *, audit=True):
+        # Administrative callers can force reconciliation. Frequent runtime
+        # reports use incrementally tracked allocations, audited at most 60s
+        # apart by _spool_bytes (also checked before every physical write).
+        if audit:
+            self._audit_usage()
         return {
-            "pending_messages": len(pending),
-            "pending_bytes": sum(item["payload_bytes"] for item in pending),
-            "quarantined_messages": sum(
-                item["state"] == "quarantine" for item in self.index.values()
-            ),
+            "storage_metrics": deepcopy(self.operation_metrics),
+            "pending_messages": self._state_counts["pending"],
+            "pending_bytes": self._pending_bytes,
+            "quarantined_messages": self._state_counts["quarantine"],
             "last_backend_ack_at": self.meta["last_backend_ack_at"],
             "limit_bytes": self.limit,
             "used_bytes": self.used_bytes(),
