@@ -84,6 +84,16 @@ class DeliveryClient:
         metric["max_elapsed_ms"] = max(metric["max_elapsed_ms"], elapsed)
         outcome = result.reason or result.kind
         metric["results"][outcome] = metric["results"].get(outcome, 0) + 1
+        if result.kind == "accepted" and kind == "edge_status":
+            # Local receipt evidence only; does not add fields to the wire contract.
+            metric["latest_accepted_status"] = {
+                "message_id": payload["message_id"],
+                "generated_at": payload["generated_at"],
+                "observed_at": datetime.now(UTC).isoformat(),
+                "received_at": result.received_at,
+                "overall_state": payload["overall_state"],
+                "reason_codes": list(payload["reason_codes"]),
+            }
         if result.kind == "accepted" and kind in ("PERIODIC", "STATE"):
             generated = payload.get("generated_at")
             if generated is not None and (
