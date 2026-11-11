@@ -9,7 +9,12 @@ from .transport import Backoff
 
 
 class DeliveryWorker:
-    def __init__(self, store, transport, *, latest_status=None, clock=time.monotonic):
+    def __init__(
+        self, store, transport, *, latest_status=None, clock=time.monotonic, network_slots=8
+    ):
+        if type(network_slots) is not int or not 1 <= network_slots <= 8:
+            raise ValueError("network slots must be between 1 and 8")
+        self.network_slots = network_slots
         self.store, self.transport = store, transport
         self.latest_status = latest_status if latest_status is not None else {}
         self.backoff = Backoff()
@@ -55,11 +60,11 @@ class DeliveryWorker:
             sent += 1
 
         def refill():
-            # Keep six network slots. A finite turn also services token rotation,
+            # Keep a bounded number of network slots. A finite turn also services token rotation,
             # status fairness and shutdown without retaining an unbounded batch.
             while (
                 ready
-                and len(tasks) < 6
+                and len(tasks) < self.network_slots
                 and sent < 16
                 and not stopped
                 and self.clock() - send_started < 1
