@@ -487,7 +487,6 @@ def service_snapshots(config, *, loss_tracker=None, now=None, identities=None):
 
 def recovery_delivery_healthy(config, *, now=None):
     """Local proof of current raw/judgment delivery, not just old backlog ACKs."""
-    now = datetime.now(UTC) if now is None else now
     try:
         path = Path(config["status_dir"]) / "measurement-uplink.json"
         if path.stat().st_size > 65536:
@@ -509,6 +508,9 @@ def recovery_delivery_healthy(config, *, now=None):
                 sensor["sensor_id"]
             ]
             stamps.extend([proof["generated_at"], proof["observed_at"], proof["acquired_at"]])
+        # A concurrent atomic replacement can contain a timestamp newer than
+        # a clock sampled before read_bytes. Compare only after owning the data.
+        now = datetime.now(UTC) if now is None else now
         return all(0 <= (now - datetime.fromisoformat(at)).total_seconds() <= 15 for at in stamps)
     except (OSError, ValueError, KeyError, TypeError):
         return False
@@ -644,6 +646,7 @@ async def orchestrator(config, stop):
                     "DEGRADED" if status.reason else "HEALTHY",
                     observations=orch.observations,
                     loss_recovery=orch.loss_recovery.snapshot(time.monotonic()),
+                    recovery_checks=orch.recovery_checks,
                     scan_update_alarms=orch.scan_update_alarms(now_ns=time.monotonic_ns()),
                     scan_update_alarm_enabled=orch.scan_update_alarm_enabled,
                 )
@@ -656,7 +659,14 @@ async def orchestrator(config, stop):
                 # slot is free; a slow durable write must not evict a judgment.
                 await sender.wait_for_capacity()
                 start = time.monotonic()
-                sender.offer(await asyncio.to_thread(orch.assessment_bundle))
+                bundle = await asyncio.to_thread(orch.assessment_bundle)
+                # Recovery state belongs to this event loop. A worker publishing
+                # during status() could appear newer than its captured now_ns.
+                orch.recovery_evidence = (
+                    time.monotonic_ns(),
+                    frozenset(r["scan_id"] for r in bundle[-1]["evidence"]["scans"]),
+                )
+                sender.offer(bundle)
                 await asyncio.sleep(max(0, 1 - (time.monotonic() - start)))
 
         with Watchdog() as watchdog:
