@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -152,6 +153,38 @@ async def test_storage_metrics_separate_execution_from_queue_wait(tmp_path):
         assert metrics["enqueue"]["calls"] == 1
         assert metrics["enqueue"]["run_ms"] >= 0
         assert metrics["enqueue"]["queue_ms"] >= 0
+
+
+def test_status_counts_are_incremental_across_ack_quarantine_and_restart(tmp_path):
+    class NoWalk(dict):
+        def values(self):
+            raise AssertionError("status enumerated the delivery backlog")
+
+    with Outbox(tmp_path) as store:
+        bodies = [message() for _ in range(4)]
+        for body in bodies:
+            store.enqueue(body)
+        store.quarantine(bodies[0]["message_id"], "SCHEMA_REJECTED")
+        store.delivered(bodies[1]["message_id"], "2026-11-10T00:00:00Z")
+        store.index = NoWalk(store.index)
+        stats = store.stats(audit=False)
+        assert stats["pending_messages"] == 2
+        assert stats["quarantined_messages"] == 1
+        expected_bytes = sum(
+            len(
+                json.dumps(
+                    b, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+                ).encode()
+            )
+            for b in bodies[2:]
+        )
+        assert stats["pending_bytes"] == expected_bytes
+    with Outbox(tmp_path) as store:
+        store.index = NoWalk(store.index)
+        stats = store.stats(audit=False)
+        assert stats["pending_messages"] == 2
+        assert stats["quarantined_messages"] == 1
+        assert stats["pending_bytes"] == expected_bytes
 
 
 def test_retry_heap_compaction_retains_pinned_and_pending_records(tmp_path):

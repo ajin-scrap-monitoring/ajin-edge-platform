@@ -8,7 +8,7 @@ from ajin_edge.v2.worker import DeliveryWorker
 from test_v2_contracts import message
 
 
-async def test_free_slot_refills_before_slow_peer_finishes_with_four_requests_max(tmp_path):
+async def test_free_slot_refills_before_slow_peer_finishes_with_six_requests_max(tmp_path):
     bodies = [message() for _ in range(8)]
     release = asyncio.Event()
     refilled = asyncio.Event()
@@ -23,7 +23,7 @@ async def test_free_slot_refills_before_slow_peer_finishes_with_four_requests_ma
             sent.append(body["message_id"])
             active += 1
             peak = max(peak, active)
-            if len(sent) > 4:
+            if len(sent) > 6:
                 refilled.set()
             try:
                 if body["message_id"] == bodies[-1]["message_id"]:
@@ -41,7 +41,7 @@ async def test_free_slot_refills_before_slow_peer_finishes_with_four_requests_ma
         try:
             await asyncio.wait_for(refilled.wait(), 1)
             assert not release.is_set()
-            assert peak <= 4
+            assert peak <= 6
             assert len(store.inflight) <= 16  # Includes bounded, not-yet-durable ACKs.
         finally:
             release.set()
@@ -71,14 +71,14 @@ async def test_failure_stops_refill_and_keeps_inflight_receipts(tmp_path, outcom
             store.enqueue(body)
         worker = DeliveryWorker(store, Transport())
         await worker.step(now=0)
-        assert len(sent) == 4
+        assert len(sent) == 6
         if outcome == "auth":
             assert worker.blocked_token == "test"
         elif outcome == "configuration":
             assert worker.configuration_blocked
         else:
             assert worker.next_attempt > 0
-        assert store.stats()["pending_messages"] == 5
+        assert store.stats()["pending_messages"] == 3
         assert not store.inflight
 
 
@@ -154,14 +154,18 @@ async def test_network_slots_continue_while_ack_batch_waits_for_storage(tmp_path
     ack_entered, release = threading.Event(), threading.Event()
     refilled = asyncio.Event()
     sent = []
+    http_release = asyncio.Event()
 
     class Transport:
         token = "test"
 
         async def send(self, body):
             sent.append(body["message_id"])
-            if len(sent) >= 13:
+            ordinal = len(sent)
+            if ordinal >= 15:
                 refilled.set()
+            if ordinal > 8:
+                await http_release.wait()
             await asyncio.sleep(0)
             return Result("accepted", received_at="2026-09-20T01:00:00Z")
 
@@ -178,11 +182,15 @@ async def test_network_slots_continue_while_ack_batch_waits_for_storage(tmp_path
         monkeypatch.setattr(store, "delivered_many", delayed)
         task = asyncio.create_task(DeliveryWorker(store, Transport()).step())
         try:
+            assert await asyncio.to_thread(ack_entered.wait, 1)
+            assert len(sent) == 14
+            http_release.set()
             await asyncio.wait_for(refilled.wait(), 1)
             assert not release.is_set()
             assert store.get(sent[0]) is not None
             assert not store.inspect(sent[0])["remote_acked"]
         finally:
+            http_release.set()
             release.set()
             await task
         assert store.stats()["pending_messages"] == 0
@@ -271,3 +279,36 @@ async def test_cancel_during_ack_flush_keeps_unconfirmed_data_replayable(tmp_pat
         for body in bodies:
             mid = body["message_id"]
             assert store.inspect(mid)["remote_acked"] or store.get(mid)["payload"] == body
+
+
+async def test_six_network_slots_are_available_and_bounded(tmp_path):
+    release, full = asyncio.Event(), asyncio.Event()
+    active = peak = 0
+
+    class Transport:
+        token = "test"
+
+        async def send(self, body):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            if active == 6:
+                full.set()
+            try:
+                await release.wait()
+                return Result("accepted", received_at="2026-09-20T01:00:00Z")
+            finally:
+                active -= 1
+
+    with Outbox(tmp_path) as store:
+        for _ in range(16):
+            store.enqueue(message())
+        task = asyncio.create_task(DeliveryWorker(store, Transport()).step())
+        try:
+            await asyncio.wait_for(full.wait(), 0.5)
+            assert active == peak == 6
+        finally:
+            release.set()
+            await task
+        assert peak == 6
+        assert not store.inflight

@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime
@@ -70,6 +71,8 @@ class Outbox:
             "receipts": {},
         }
         self.index = {}
+        self._state_counts = Counter()
+        self._pending_bytes = 0
         self._acked = set()
         self._reference_cache = None
         self._ready_old, self._ready_new, self._ready_config = [], [], []
@@ -278,10 +281,8 @@ class Outbox:
                 raise ValueError("persisted ACK conflicts with record")
             if record["state"] == "pending":
                 record = {**record, "state": "acked"}
-        self.index[payload["message_id"]] = {
-            key: value for key, value in record.items() if key != "payload"
-        }
-        self.index[payload["message_id"]].update(
+        item = {key: value for key, value in record.items() if key != "payload"}
+        item.update(
             path=path,
             kind=payload["message_type"],
             delivery_kind=payload.get("delivery_kind"),
@@ -291,6 +292,10 @@ class Outbox:
             payload_bytes=len(canonical(payload)) if payload_bytes is None else payload_bytes,
         )
         mid = payload["message_id"]
+        if mid in self.index:
+            self._count_item(self.index[mid], -1)
+        self.index[mid] = item
+        self._count_item(item, 1)
         if record["state"] == "acked":
             self._acked.add(mid)
         else:
@@ -299,6 +304,20 @@ class Outbox:
             self._reference_cache = None
         if record["state"] == "pending":
             self._queue_pending(mid)
+
+    def _count_item(self, item, direction):
+        self._state_counts[item["state"]] += direction
+        if item["state"] == "pending":
+            self._pending_bytes += direction * item["payload_bytes"]
+
+    def _mark_acked(self, mid, item):
+        if item["state"] != "acked":
+            self._count_item(item, -1)
+            item["state"] = "acked"
+            self._count_item(item, 1)
+        self._acked.add(mid)
+        if item["kind"] == "edge_assessment":
+            self._reference_cache = None
 
     def _queue_pending(self, mid):
         item = self.index[mid]
@@ -636,6 +655,7 @@ class Outbox:
         if self.index[mid]["kind"] == "edge_assessment":
             self._reference_cache = None
         self._acked.discard(mid)
+        self._count_item(self.index[mid], -1)
         del self.index[mid]
         self._compact_ready()
         if sync:
@@ -781,10 +801,8 @@ class Outbox:
                         os.replace(path, target)
                         # The filesystem move has happened even if inspecting
                         # its allocation fails; keep retries pointed at the body.
-                        retained.update(path=target, state="acked")
-                        self._acked.add(oldest)
-                        if retained["kind"] == "edge_assessment":
-                            self._reference_cache = None
+                        retained["path"] = target
+                        self._mark_acked(oldest, retained)
                         self._forget_allocation(path)
                         self._track_allocation(target)
                     self._sync_directory()
@@ -796,8 +814,7 @@ class Outbox:
         # The fsynced receipt is authoritative across restart; do not rewrite
         # a large protected scan for every successful HTTP acknowledgement.
         for mid, item in items.items():
-            item["state"] = "acked"
-            self._acked.add(mid)
+            self._mark_acked(mid, item)
             if release_pins:
                 self.inflight.discard(mid)
             if item["kind"] == "edge_assessment":
@@ -857,14 +874,11 @@ class Outbox:
         # apart by _spool_bytes (also checked before every physical write).
         if audit:
             self._audit_usage()
-        pending = [item for item in self.index.values() if item["state"] == "pending"]
         return {
             "storage_metrics": deepcopy(self.operation_metrics),
-            "pending_messages": len(pending),
-            "pending_bytes": sum(item["payload_bytes"] for item in pending),
-            "quarantined_messages": sum(
-                item["state"] == "quarantine" for item in self.index.values()
-            ),
+            "pending_messages": self._state_counts["pending"],
+            "pending_bytes": self._pending_bytes,
+            "quarantined_messages": self._state_counts["quarantine"],
             "last_backend_ack_at": self.meta["last_backend_ack_at"],
             "limit_bytes": self.limit,
             "used_bytes": self.used_bytes(),

@@ -55,11 +55,11 @@ class DeliveryWorker:
             sent += 1
 
         def refill():
-            # Keep four network slots. A finite turn also services token rotation,
+            # Keep six network slots. A finite turn also services token rotation,
             # status fairness and shutdown without retaining an unbounded batch.
             while (
                 ready
-                and len(tasks) < 4
+                and len(tasks) < 6
                 and sent < 16
                 and not stopped
                 and self.clock() - send_started < 1
