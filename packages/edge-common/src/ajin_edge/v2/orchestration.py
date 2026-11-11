@@ -8,7 +8,9 @@ from uuid import uuid4
 from . import point_cloud
 from .contracts import validate_message
 from .judgment import SectionJudgment, fill_enabled, is_independent
+from .loss_recovery import OutboxLossRecovery
 from .processing import canonical, copy_observation, envelope, utc_now, validate_configuration
+from .scan_update_alarm import ScanUpdateAlarm
 
 
 class ConfigurationGate:
@@ -56,7 +58,7 @@ class ConfigurationGate:
 
 
 class Orchestrator:
-    def __init__(self, config, *, enabled_rules=()):
+    def __init__(self, config, *, enabled_rules=(), scan_update_alarm_enabled=False):
         validate_configuration(config)
         self.config = deepcopy(config)
         self.instance_id = str(uuid4())
@@ -75,6 +77,10 @@ class Orchestrator:
         self.events = {}
         self.observations = 0
         self.judgment = SectionJudgment(self.config)
+        self.loss_recovery = OutboxLossRecovery()
+        self.recovery_evidence = None
+        self.scan_update_alarm_enabled = scan_update_alarm_enabled
+        self.scan_alarms = {sensor: ScanUpdateAlarm() for sensor in self.sensors}
 
     def ingest(self, observation, *, now_ns):
         sensor = self.sensors[observation["sensor_id"]]
@@ -84,6 +90,9 @@ class Orchestrator:
         acquired = int(scan["acquired_monotonic_ns"])
         if acquired > now_ns or (sensor["ns"] is not None and acquired <= sensor["ns"]):
             return False
+        self.scan_alarms[observation["sensor_id"]].ingest(
+            acquired, scan["acquired_at"], now_ns=now_ns
+        )
         self._state(sensor, now_ns)
         if sensor["stalled"]:
             sensor["recovering_since"] = acquired
@@ -109,6 +118,9 @@ class Orchestrator:
                 return "RECOVERING"
             sensor["recovering_since"] = None
         return "FRESH"
+
+    def scan_update_alarms(self, *, now_ns):
+        return {sensor: alarm.snapshot(now_ns=now_ns) for sensor, alarm in self.scan_alarms.items()}
 
     def sensor_states(self, *, now_ns):
         result = []
@@ -239,6 +251,10 @@ class Orchestrator:
 
     def assessment_bundle(self, *, now_ns=None, generated_at=None):
         body, used = self._evaluate(now_ns=now_ns, generated_at=generated_at)
+        self.recovery_evidence = (
+            time.monotonic_ns() if now_ns is None else now_ns,
+            frozenset(r["scan_id"] for r in body["evidence"]["scans"]),
+        )
         return [self.evidence(o, [body["assessment_id"]]) for o in used] + [body]
 
     def event(self, kind, stage, used_observations, *, rule_version, assessment_id=None):
@@ -306,22 +322,46 @@ class Orchestrator:
         validate_message(payload)
         return payload
 
-    def status(self, stats, services, *, now_ns, clock=None):
+    def status(self, stats, services, *, now_ns, clock=None, recovery_context=None):
         self.sequence += 1
         sensors = self.sensor_states(now_ns=now_ns)
+        alarms = self.scan_update_alarms(now_ns=now_ns)
+        if self.scan_update_alarm_enabled:
+            for sensor in sensors:
+                sensor["scan_update_alarm"] = alarms[sensor["sensor_id"]]
         states = {s["data_state"] for s in sensors}
         reasons = sorted({r for s in sensors for r in s["reason_codes"]})
         service_problem = any(s["state"] != "HEALTHY" for s in services)
+        context = recovery_context or {"healthy": False, "epoch": None}
+        required = {"lidar-processing", "measurement-uplink", "edge-orchestrator"} | {
+            "lidar-driver-" + s["sensor_id"].removeprefix("lidar-") for s in self.config["sensors"]
+        }
+        by_name = {s["service"]: s for s in services}
+        services_healthy = all(by_name.get(name, {}).get("state") == "HEALTHY" for name in required)
+        evidence = self.recovery_evidence
+        evidence_known = evidence is not None and 0 <= now_ns - evidence[0] <= 15_000_000_000
+        current_ids = {s["scan_id"] for s in self.sensors.values() if s["scan_id"]}
+        if evidence_known:
+            current_ids.update(evidence[1])
+        missing = bool(current_ids.intersection(stats["unavailable_evidence_scan_ids"]))
+        loss_active = self.loss_recovery.observe(
+            stats["lost_messages"],
+            healthy=states == {"FRESH"}
+            and services_healthy
+            and context["healthy"]
+            and evidence_known,
+            epoch=context["epoch"],
+            now=now_ns / 1_000_000_000,
+            evidence_missing=missing,
+        )
         overall = (
             "MEASUREMENT_UNAVAILABLE"
             if states <= {"STALE", "UNAVAILABLE"}
             else (
-                "DEGRADED"
-                if states != {"FRESH"} or service_problem or stats["lost_messages"]
-                else "HEALTHY"
+                "DEGRADED" if states != {"FRESH"} or service_problem or loss_active else "HEALTHY"
             )
         )
-        if stats["lost_messages"]:
+        if loss_active:
             reasons.append("OUTBOX_DATA_LOSS")
         return {
             **envelope(self.config, "edge_status"),

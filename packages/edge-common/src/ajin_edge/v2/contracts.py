@@ -181,6 +181,29 @@ ASSESSMENT_SCHEMA["properties"]["fusion_result"] = nullable(FUSION_RESULT_SCHEMA
 ASSESSMENT_SCHEMA["properties"]["filtered_point_clouds"] = nullable(
     array(CLOUD_SCHEMA, minItems=2, maxItems=2)
 )
+SCAN_UPDATE_ALARM = obj(
+    {
+        "state": enum("UNKNOWN", "CLEAR", "PENDING", "ACTIVE", "RECOVERING"),
+        "active": {"type": ["boolean", "null"]},
+        "scan_age_ms": {"type": ["number", "null"], "minimum": 0},
+        "last_valid_scan_at": nullable(TIME),
+        "confirm_after_ms": {"const": 3000},
+        "reason_codes": REASONS,
+    }
+)
+SCAN_UPDATE_ALARM["allOf"] = [
+    {
+        "if": {"properties": {"state": {"const": state}}},
+        "then": {"properties": {"active": {"const": active}, "reason_codes": {"const": reasons}}},
+    }
+    for state, active, reasons in (
+        ("UNKNOWN", None, []),
+        ("CLEAR", False, []),
+        ("PENDING", False, ["SCAN_UPDATE_DELAY_PENDING"]),
+        ("ACTIVE", True, ["SCAN_UPDATE_DELAY_CONFIRMED"]),
+        ("RECOVERING", True, ["SCAN_UPDATE_RECOVERING"]),
+    )
+]
 STATUS_SCHEMA = message_schema(
     "edge_status",
     {
@@ -235,6 +258,9 @@ STATUS_SCHEMA = message_schema(
             }
         ),
     },
+)
+STATUS_SCHEMA["properties"]["sensors"]["items"]["properties"]["scan_update_alarm"] = (
+    SCAN_UPDATE_ALARM
 )
 ROW = array(NUMBER, minItems=3, maxItems=3)
 CONFIGURATION_SCHEMA = message_schema(
