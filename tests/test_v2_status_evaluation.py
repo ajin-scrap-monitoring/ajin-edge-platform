@@ -37,16 +37,11 @@ async def test_stats_rpc_does_not_queue_behind_slow_storage(tmp_path, monkeypatc
             await server.stop(0)
 
 
-def test_stats_snapshot_never_exposes_mutable_or_stalled_storage(tmp_path, monkeypatch):
+def test_stats_snapshot_never_exposes_mutable_storage(tmp_path):
     with Outbox(tmp_path) as store:
-        # A completed snapshot remains valid while idle, but not during a hung write.
         snapshot = store.realtime_stats()
         snapshot["unavailable_evidence_scan_ids"].append("foreign")
         assert store.realtime_stats()["unavailable_evidence_scan_ids"] == []
-        monkeypatch.setattr(store, "_operation_started", 100.0)
-        monkeypatch.setattr("ajin_edge.v2.outbox.time.monotonic", lambda: 103.001)
-        with pytest.raises(RuntimeError, match="storage observation"):
-            store.realtime_stats()
 
 
 async def test_completed_loss_updates_publish_and_storage_failure_is_not_healthy(
@@ -69,7 +64,7 @@ async def test_completed_loss_updates_publish_and_storage_failure_is_not_healthy
         assert store.realtime_stats()["storage_observation_epoch"] == 1
 
 
-def test_completed_slow_write_remains_visible_between_status_polls(tmp_path, monkeypatch):
+def test_slow_successful_storage_is_not_an_observation_failure(tmp_path, monkeypatch):
     with Outbox(tmp_path) as store:
         clock = [100.0]
         monkeypatch.setattr("ajin_edge.v2.outbox.time.monotonic", lambda: clock[0])
@@ -81,9 +76,35 @@ def test_completed_slow_write_remains_visible_between_status_polls(tmp_path, mon
 
         monkeypatch.setattr(store, "collect", slow_collect)
         store._timed_call("collect", clock[0], (), {})
-        assert store.realtime_stats()["storage_observation_epoch"] == 1
+        assert store.realtime_stats()["storage_observation_epoch"] == 0
         store._timed_call("inspect", clock[0], ("unknown",), {})
-        assert store.realtime_stats()["storage_observation_epoch"] == 1
+        assert store.realtime_stats()["storage_observation_epoch"] == 0
+
+
+async def test_new_loss_is_observable_before_slow_durable_write_completes(tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    with Outbox(tmp_path) as store:
+        body = message()
+        await store.call("enqueue", body)
+        original = store._save_meta
+
+        def slow_save():
+            entered.set()
+            release.wait(5)
+            original()
+
+        monkeypatch.setattr(store, "_save_meta", slow_save)
+        pending = asyncio.create_task(store.call("_loss", body, "CAPACITY_EVICTION"))
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            # Storage duration is not a gap between actual recovery evaluations.
+            stats = store.realtime_stats()
+            assert stats["lost_messages"] == 1
+            assert body["sensors"][0]["scan"]["scan_id"] in stats["unavailable_evidence_scan_ids"]
+            assert not pending.done()
+        finally:
+            release.set()
+            await pending
 
 
 async def test_status_persistence_is_bounded_and_does_not_hold_evaluation(tmp_path, monkeypatch):

@@ -79,8 +79,8 @@ class Outbox:
         self._ready_live = {"PERIODIC": [], "STATE": []}
         self._queue_version = 0
         self.operation_metrics = {}
-        self._operation_started = None
         self._realtime_stats = None
+        self._realtime_loss = None
         self._storage_observation_epoch = 0
         self.inflight = set()
         self.executor = None
@@ -101,6 +101,7 @@ class Outbox:
             if self.used_bytes() > self.limit:
                 raise CapacityError("existing directory exceeds configured budget")
             self._save_meta()
+            self._realtime_loss = self._loss_stats()
             self._realtime_stats = {
                 **deepcopy(self.stats(audit=False)),
                 "storage_observation_epoch": 0,
@@ -140,7 +141,6 @@ class Outbox:
 
     def _timed_call(self, method, queued, args, kwargs):
         started = time.monotonic()
-        self._operation_started = started
         completed = False
         try:
             result = getattr(self, method)(*args, **kwargs)
@@ -175,7 +175,7 @@ class Outbox:
                 total_elapsed = (time.monotonic() - started) * 1000
                 metric["run_ms"] += total_elapsed - elapsed
                 metric["max_run_ms"] = max(metric["max_run_ms"], total_elapsed)
-                if not completed or total_elapsed > 3000:
+                if not completed:
                     self._storage_observation_epoch += 1
                 if completed:
                     snapshot["storage_metrics"] = deepcopy(self.operation_metrics)
@@ -183,19 +183,33 @@ class Outbox:
                     self._realtime_stats = snapshot
                 else:
                     self._realtime_stats = None
-                self._operation_started = None
+
+    def _loss_stats(self):
+        return deepcopy(
+            {
+                key: self.meta[key]
+                for key in (
+                    "lost_messages",
+                    "loss_from",
+                    "loss_to",
+                    "last_loss_reason",
+                    "unavailable_evidence_scan_ids",
+                )
+            }
+        )
 
     def realtime_stats(self):
-        """Read completed storage state without joining the durable writer queue.
+        """Completed queue gauges plus immediately observed loss/reference state.
 
-        Idle state cannot change, so it remains current. An in-flight operation
-        exceeding the existing 3-second observation bound fails closed.
+        The recovery observation gap bounds evaluations, not individual writes.
+        Independent service and ACK timestamps still bound progress freshness.
         """
-        started = self._operation_started
         snapshot = self._realtime_stats
-        if snapshot is None or (started is not None and time.monotonic() - started > 3):
+        if snapshot is None:
             raise RuntimeError("storage observation unavailable")
-        return deepcopy(snapshot)
+        result = deepcopy(snapshot)
+        result.update(deepcopy(self._realtime_loss))
+        return result
 
     def inspect(self, mid):
         item = self.index.get(mid)
@@ -761,6 +775,9 @@ class Outbox:
         self.meta["last_loss_reason"] = reason
         ids = self.meta["unavailable_evidence_scan_ids"] + sorted(self._scans(payload))
         self.meta["unavailable_evidence_scan_ids"] = list(dict.fromkeys(ids))[-32:]
+        # Expose loss before any slow persistence or eviction. Never let an
+        # in-flight write hide a changed loss count from recovery evaluation.
+        self._realtime_loss = self._loss_stats()
         self._save_meta()
 
     def next_ready(self, *, pin=False):
