@@ -335,7 +335,11 @@ async def uplink(config, stop):
                         if worker.blocked_token or worker.configuration_blocked
                         else ("RETRYING" if worker.reason else "HEALTHY")
                     )
-                    status.write(state, **await store.call("stats", audit=False))
+                    status.write(
+                        state,
+                        http_delivery=transport.metrics,
+                        **await store.call("stats", audit=False),
+                    )
                     await asyncio.sleep(2)
 
             try:

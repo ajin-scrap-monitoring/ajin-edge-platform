@@ -75,6 +75,8 @@ async def test_total_timeout_includes_slow_ack():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         client = DeliveryClient("https://backend.example", "test-token", http, timeout=0.01)
         assert (await client.send(payload())).kind == "retry"
+        assert client.metrics["lidar_measurement"]["results"] == {"NETWORK_OR_TIMEOUT": 1}
+        assert client.metrics["lidar_measurement"]["elapsed_ms"] >= 0
 
 
 def test_backoff_caps_jitter_and_success_resets():

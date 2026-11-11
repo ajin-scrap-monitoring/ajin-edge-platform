@@ -120,6 +120,61 @@ def test_reference_cache_tracks_judgment_ack_and_restart(tmp_path):
         assert not store.index
 
 
+def test_selection_does_not_walk_pending_backlog_and_retries_pins(tmp_path):
+    class CountedIndex(dict):
+        walks = 0
+
+        def items(self):
+            self.walks += 1
+            return super().items()
+
+    with Outbox(tmp_path) as store:
+        bodies = [message() for _ in range(80)]
+        for body in bodies:
+            store.enqueue(body)
+        store.index = CountedIndex(store.index)
+        selected = []
+        for _ in range(20):
+            row = store.next_ready(pin=True)
+            selected.append(row["payload"]["message_id"])
+        assert len(set(selected)) == 20
+        assert selected[:2] == [bodies[-1]["message_id"], bodies[0]["message_id"]]
+        assert store.index.walks <= 2, "selection scans all pending bodies for every slot"
+        for mid in selected:
+            store.unpin(mid)
+        assert store.next_ready()["payload"]["message_id"] == bodies[-1]["message_id"]
+
+
+async def test_storage_metrics_separate_execution_from_queue_wait(tmp_path):
+    with Outbox(tmp_path) as store:
+        await store.call("enqueue", message())
+        metrics = (await store.call("stats", audit=False))["storage_metrics"]
+        assert metrics["enqueue"]["calls"] == 1
+        assert metrics["enqueue"]["run_ms"] >= 0
+        assert metrics["enqueue"]["queue_ms"] >= 0
+
+
+def test_retry_heap_compaction_retains_pinned_and_pending_records(tmp_path):
+    with Outbox(tmp_path) as store:
+        bodies = [message() for _ in range(40)]
+        for body in bodies:
+            store.enqueue(body)
+        held = [store.next_ready(pin=True)["payload"]["message_id"] for _ in range(8)]
+        for _ in range(500):
+            row = store.next_ready(pin=True)
+            assert row["payload"]["message_id"] not in held
+            store.unpin(row["payload"]["message_id"])
+        assert max(len(store._ready_old), len(store._ready_new)) <= 2 * len(store.index) + 64
+        for mid in held:
+            store.unpin(mid)
+        selected = {store.next_ready(pin=True)["payload"]["message_id"] for _ in range(40)}
+        assert selected == {b["message_id"] for b in bodies}
+        assert store.next_ready(pin=True) is None
+    with Outbox(tmp_path) as store:
+        selected = {store.next_ready(pin=True)["payload"]["message_id"] for _ in range(40)}
+        assert selected == {b["message_id"] for b in bodies}
+
+
 def test_writing_and_acking_do_not_rescan_every_queued_file(tmp_path, monkeypatch):
     with Outbox(tmp_path) as store:
         for _ in range(40):

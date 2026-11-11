@@ -6,6 +6,7 @@ No SQLite WAL, implicit v1 migration, or time-based expiry of pending messages.
 
 import asyncio
 import hashlib
+import heapq
 import json
 import os
 import shutil
@@ -71,6 +72,9 @@ class Outbox:
         self.index = {}
         self._acked = set()
         self._reference_cache = None
+        self._ready_old, self._ready_new, self._ready_config = [], [], []
+        self._queue_version = 0
+        self.operation_metrics = {}
         self.inflight = set()
         self.executor = None
         self._file_allocations = {}
@@ -120,8 +124,31 @@ class Outbox:
     async def call(self, method, *args, **kwargs):
         """Serialize blocking filesystem work outside the service event loop."""
         return await asyncio.get_running_loop().run_in_executor(
-            self.executor, partial(getattr(self, method), *args, **kwargs)
+            self.executor, partial(self._timed_call, method, time.monotonic(), args, kwargs)
         )
+
+    def _timed_call(self, method, queued, args, kwargs):
+        started = time.monotonic()
+        try:
+            return getattr(self, method)(*args, **kwargs)
+        finally:
+            elapsed = (time.monotonic() - started) * 1000
+            wait = (started - queued) * 1000
+            metric = self.operation_metrics.setdefault(
+                method,
+                {
+                    "calls": 0,
+                    "run_ms": 0.0,
+                    "queue_ms": 0.0,
+                    "max_run_ms": 0.0,
+                    "max_queue_ms": 0.0,
+                },
+            )
+            metric["calls"] += 1
+            metric["run_ms"] += elapsed
+            metric["queue_ms"] += wait
+            metric["max_run_ms"] = max(metric["max_run_ms"], elapsed)
+            metric["max_queue_ms"] = max(metric["max_queue_ms"], wait)
 
     def inspect(self, mid):
         item = self.index.get(mid)
@@ -268,6 +295,53 @@ class Outbox:
             self._acked.discard(mid)
         if payload["message_type"] == "edge_assessment":
             self._reference_cache = None
+        if record["state"] == "pending":
+            self._queue_pending(mid)
+
+    def _queue_pending(self, mid):
+        item = self.index[mid]
+        self._queue_version += 1
+        item["queue_version"] = self._queue_version
+        entry = (item["order"], self._queue_version, mid)
+        heapq.heappush(self._ready_old, entry)
+        heapq.heappush(self._ready_new, (-entry[0], entry[1], mid))
+        if item["kind"] == "edge_configuration":
+            heapq.heappush(self._ready_config, entry)
+        self._compact_ready()
+
+    def _compact_ready(self):
+        # Lazy invalid entries are bounded, including during long retry loops.
+        if (
+            max(len(self._ready_old), len(self._ready_new), len(self._ready_config))
+            <= 2 * len(self.index) + 64
+        ):
+            return
+        entries = [
+            (v["order"], v["queue_version"], mid)
+            for mid, v in self.index.items()
+            if v["state"] == "pending" and mid not in self.inflight
+        ]
+        self._ready_old = entries
+        self._ready_new = [(-order, version, mid) for order, version, mid in entries]
+        self._ready_config = [
+            entry for entry in entries if self.index[entry[2]]["kind"] == "edge_configuration"
+        ]
+        for heap in (self._ready_old, self._ready_new, self._ready_config):
+            heapq.heapify(heap)
+
+    def _ready(self, heap):
+        while heap:
+            _, version, mid = heap[0]
+            item = self.index.get(mid)
+            if (
+                item is not None
+                and item["state"] == "pending"
+                and item.get("queue_version") == version
+                and mid not in self.inflight
+            ):
+                return mid
+            heapq.heappop(heap)
+        return None
 
     def get(self, message_id):
         item = self.index.get(message_id)
@@ -539,6 +613,7 @@ class Outbox:
             self._reference_cache = None
         self._acked.discard(mid)
         del self.index[mid]
+        self._compact_ready()
         if sync:
             self._sync_directory()
 
@@ -589,26 +664,21 @@ class Outbox:
         self._save_meta()
 
     def next_ready(self, *, pin=False):
-        items = [
-            (mid, item)
-            for mid, item in self.index.items()
-            if item["state"] == "pending" and mid not in self.inflight
-        ]
-        if not items:
-            return None
-        configurations = [pair for pair in items if pair[1]["kind"] == "edge_configuration"]
-        if configurations:
-            mid, _ = min(configurations, key=lambda pair: pair[1]["order"])
-        else:
-            selector = max if self.latest else min
-            mid, _ = selector(items, key=lambda pair: pair[1]["order"])
+        mid = self._ready(self._ready_config)
+        if mid is None:
+            mid = self._ready(self._ready_new if self.latest else self._ready_old)
+            if mid is None:
+                return None
             self.latest = not self.latest
         if pin:
             self.inflight.add(mid)
         return self.get(mid)
 
     def unpin(self, mid):
+        pinned = mid in self.inflight
         self.inflight.discard(mid)
+        if pinned and mid in self.index and self.index[mid]["state"] == "pending":
+            self._queue_pending(mid)
 
     def _change(self, mid, *, now=None, **changes):
         record = self.get(mid)
@@ -730,6 +800,7 @@ class Outbox:
             self._audit_usage()
         pending = [item for item in self.index.values() if item["state"] == "pending"]
         return {
+            "storage_metrics": deepcopy(self.operation_metrics),
             "pending_messages": len(pending),
             "pending_bytes": sum(item["payload_bytes"] for item in pending),
             "quarantined_messages": sum(

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import random
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -59,12 +60,31 @@ class DeliveryClient:
             raise ValueError("invalid bearer token")
         self.base_url, self.token, self.client = base_url.rstrip("/"), token, client
         self.timeout = timeout
+        self.metrics = {}
 
     async def send(self, payload):
+        started = time.monotonic()
         try:
-            return await asyncio.wait_for(self._send(payload), self.timeout)
+            result = await asyncio.wait_for(self._send(payload), self.timeout)
         except (TimeoutError, httpx.HTTPError):
-            return Result("retry", "NETWORK_OR_TIMEOUT")
+            result = Result("retry", "NETWORK_OR_TIMEOUT")
+        kind = (
+            payload.get("delivery_kind")
+            or payload.get("assessment_type")
+            or payload["message_type"]
+        )
+        if kind not in ("PERIODIC", "EVIDENCE", "STATE", *PATHS):
+            kind = "OTHER"
+        elapsed = (time.monotonic() - started) * 1000
+        metric = self.metrics.setdefault(
+            kind, {"calls": 0, "elapsed_ms": 0.0, "max_elapsed_ms": 0.0, "results": {}}
+        )
+        metric["calls"] += 1
+        metric["elapsed_ms"] += elapsed
+        metric["max_elapsed_ms"] = max(metric["max_elapsed_ms"], elapsed)
+        outcome = result.reason or result.kind
+        metric["results"][outcome] = metric["results"].get(outcome, 0) + 1
+        return result
 
     async def _send(self, payload):
         url = self.base_url + "/api/edge/v2/" + PATHS[payload["message_type"]]
