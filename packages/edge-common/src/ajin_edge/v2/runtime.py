@@ -142,6 +142,35 @@ class LocalStatus:
             raise
 
 
+class LatestStatusWriter:
+    """One in-flight write plus one latest local diagnostic snapshot.
+
+    These replaceable status gauges are not raw scans or durable judgments.
+    Capture the real evaluation time before queuing, never at disk completion.
+    """
+
+    def __init__(self, status):
+        self.status = status
+        self.pending = None
+        self.ready = asyncio.Event()
+
+    def offer(self, state="HEALTHY", **telemetry):
+        self.pending = self.status._snapshot(state, telemetry)
+        self.ready.set()
+
+    async def run(self):
+        while True:
+            await self.ready.wait()
+            snapshot, self.pending = self.pending, None
+            self.ready.clear()
+            task = asyncio.create_task(asyncio.to_thread(self.status._persist, snapshot))
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
+
+
 class PendingSender:
     def __init__(self, client, status, *, capacity=10):
         self.client, self.status, self.capacity = client, status, capacity
@@ -510,6 +539,7 @@ async def orchestrator(config, stop):
     )
     orch.loss_recovery = OutboxLossRecovery(previous_loss_high_water(config))
     status = LocalStatus(config, "edge-orchestrator")
+    status_writer = LatestStatusWriter(status)
     service_losses, observation_losses = LossTracker(), LossTracker()
     observation_count = 0
     observation_instance = None
@@ -582,7 +612,8 @@ async def orchestrator(config, stop):
                             and all(v for k, v in identities.items() if k != "camera-edge"),
                             "epoch": tuple(
                                 sorted((k, v) for k, v in identities.items() if k != "camera-edge")
-                            ),
+                            )
+                            + (("storage", stats.get("storage_observation_epoch", 0)),),
                         },
                     )
                     signature = canonical(
@@ -609,7 +640,7 @@ async def orchestrator(config, stop):
                 except grpc.aio.AioRpcError:
                     status.reason = "LOCAL_DELIVERY_UNAVAILABLE"
                     orch.loss_recovery.interrupt()
-                await status.write_async(
+                status_writer.offer(
                     "DEGRADED" if status.reason else "HEALTHY",
                     observations=orch.observations,
                     loss_recovery=orch.loss_recovery.snapshot(time.monotonic()),
@@ -630,7 +661,13 @@ async def orchestrator(config, stop):
 
         with Watchdog() as watchdog:
             await supervise(
-                stop, consume(), periodic(), judgments(), sender.run(), watchdog.pulse()
+                stop,
+                consume(),
+                periodic(),
+                judgments(),
+                sender.run(),
+                status_writer.run(),
+                watchdog.pulse(),
             )
 
 

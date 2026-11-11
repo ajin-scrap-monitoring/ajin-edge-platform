@@ -79,6 +79,9 @@ class Outbox:
         self._ready_live = {"PERIODIC": [], "STATE": []}
         self._queue_version = 0
         self.operation_metrics = {}
+        self._operation_started = None
+        self._realtime_stats = None
+        self._storage_observation_epoch = 0
         self.inflight = set()
         self.executor = None
         self._file_allocations = {}
@@ -98,6 +101,10 @@ class Outbox:
             if self.used_bytes() > self.limit:
                 raise CapacityError("existing directory exceeds configured budget")
             self._save_meta()
+            self._realtime_stats = {
+                **deepcopy(self.stats(audit=False)),
+                "storage_observation_epoch": 0,
+            }
             self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v2-storage")
         except BaseException:
             self.close()
@@ -133,8 +140,12 @@ class Outbox:
 
     def _timed_call(self, method, queued, args, kwargs):
         started = time.monotonic()
+        self._operation_started = started
+        completed = False
         try:
-            return getattr(self, method)(*args, **kwargs)
+            result = getattr(self, method)(*args, **kwargs)
+            completed = True
+            return result
         finally:
             elapsed = (time.monotonic() - started) * 1000
             wait = (started - queued) * 1000
@@ -153,6 +164,38 @@ class Outbox:
             metric["queue_ms"] += wait
             metric["max_run_ms"] = max(metric["max_run_ms"], elapsed)
             metric["max_queue_ms"] = max(metric["max_queue_ms"], wait)
+            try:
+                # Publish only owned, completed state, never partially mutated metadata.
+                snapshot = deepcopy(self.stats(audit=False)) if completed else None
+            except BaseException:
+                self._realtime_stats = None
+                completed = False
+                raise
+            finally:
+                total_elapsed = (time.monotonic() - started) * 1000
+                metric["run_ms"] += total_elapsed - elapsed
+                metric["max_run_ms"] = max(metric["max_run_ms"], total_elapsed)
+                if not completed or total_elapsed > 3000:
+                    self._storage_observation_epoch += 1
+                if completed:
+                    snapshot["storage_metrics"] = deepcopy(self.operation_metrics)
+                    snapshot["storage_observation_epoch"] = self._storage_observation_epoch
+                    self._realtime_stats = snapshot
+                else:
+                    self._realtime_stats = None
+                self._operation_started = None
+
+    def realtime_stats(self):
+        """Read completed storage state without joining the durable writer queue.
+
+        Idle state cannot change, so it remains current. An in-flight operation
+        exceeding the existing 3-second observation bound fails closed.
+        """
+        started = self._operation_started
+        snapshot = self._realtime_stats
+        if snapshot is None or (started is not None and time.monotonic() - started > 3):
+            raise RuntimeError("storage observation unavailable")
+        return deepcopy(snapshot)
 
     def inspect(self, mid):
         item = self.index.get(mid)
