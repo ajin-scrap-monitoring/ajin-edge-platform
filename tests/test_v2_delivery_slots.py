@@ -42,7 +42,7 @@ async def test_free_slot_refills_before_slow_peer_finishes_with_four_requests_ma
             await asyncio.wait_for(refilled.wait(), 1)
             assert not release.is_set()
             assert peak <= 4
-            assert len(store.inflight) <= 4
+            assert len(store.inflight) <= 16  # Includes bounded, not-yet-durable ACKs.
         finally:
             release.set()
             await task
@@ -148,3 +148,126 @@ async def test_fast_successful_turn_is_finite_and_all_unconfirmed_data_remains(t
         assert len(sent) == len(set(sent)) == 16
         assert store.stats()["pending_messages"] == 8
         assert not store.inflight
+
+
+async def test_network_slots_continue_while_ack_batch_waits_for_storage(tmp_path, monkeypatch):
+    ack_entered, release = threading.Event(), threading.Event()
+    refilled = asyncio.Event()
+    sent = []
+
+    class Transport:
+        token = "test"
+
+        async def send(self, body):
+            sent.append(body["message_id"])
+            if len(sent) >= 13:
+                refilled.set()
+            await asyncio.sleep(0)
+            return Result("accepted", received_at="2026-09-20T01:00:00Z")
+
+    with Outbox(tmp_path) as store:
+        for _ in range(16):
+            store.enqueue(message())
+        original = store.delivered_many
+
+        def delayed(receipts, **kwargs):
+            ack_entered.set()
+            release.wait(3)
+            return original(receipts, **kwargs)
+
+        monkeypatch.setattr(store, "delivered_many", delayed)
+        task = asyncio.create_task(DeliveryWorker(store, Transport()).step())
+        try:
+            await asyncio.wait_for(refilled.wait(), 1)
+            assert not release.is_set()
+            assert store.get(sent[0]) is not None
+            assert not store.inspect(sent[0])["remote_acked"]
+        finally:
+            release.set()
+            await task
+        assert store.stats()["pending_messages"] == 0
+        assert not store.inflight
+
+
+async def test_slow_selection_does_not_prevent_any_network_dispatch(tmp_path, monkeypatch):
+    clock = [0.0]
+    sent = []
+
+    class Transport:
+        token = "test"
+
+        async def send(self, body):
+            sent.append(body["message_id"])
+            return Result("accepted", received_at="2026-09-20T01:00:00Z")
+
+    with Outbox(tmp_path) as store:
+        store.enqueue(message())
+        original = store.next_ready_many
+
+        def delayed(limit):
+            clock[0] += 2
+            return original(limit)
+
+        monkeypatch.setattr(store, "next_ready_many", delayed)
+        await DeliveryWorker(store, Transport(), clock=lambda: clock[0]).step()
+        assert len(sent) == 1
+        assert not store.index
+
+
+def test_partial_selection_error_releases_every_new_pin(tmp_path, monkeypatch):
+    with Outbox(tmp_path) as store:
+        for _ in range(4):
+            store.enqueue(message())
+        original = store.get
+        reads = 0
+
+        def failing(mid):
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                raise OSError("read interrupted")
+            return original(mid)
+
+        monkeypatch.setattr(store, "get", failing)
+        with pytest.raises(OSError):
+            store.next_ready_many()
+        assert not store.inflight
+        assert store.stats()["pending_messages"] == 4
+
+
+async def test_cancel_during_ack_flush_keeps_unconfirmed_data_replayable(tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    bodies = [message() for _ in range(16)]
+
+    class Transport:
+        token = "test"
+
+        async def send(self, body):
+            return Result("accepted", received_at="2026-09-20T01:00:00Z")
+
+    with Outbox(tmp_path) as store:
+        for body in bodies:
+            store.enqueue(body)
+        original = store.delivered_many
+
+        def delayed(receipts, **kwargs):
+            entered.set()
+            release.wait(3)
+            return original(receipts, **kwargs)
+
+        monkeypatch.setattr(store, "delivered_many", delayed)
+        task = asyncio.create_task(DeliveryWorker(store, Transport()).step())
+        await asyncio.to_thread(entered.wait, 1)
+        assert entered.is_set()
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not store.inflight
+        for body in bodies:
+            mid = body["message_id"]
+            assert store.inspect(mid)["remote_acked"] or store.get(mid)["payload"] == body
+    with Outbox(tmp_path) as store:
+        for body in bodies:
+            mid = body["message_id"]
+            assert store.inspect(mid)["remote_acked"] or store.get(mid)["payload"] == body

@@ -73,6 +73,7 @@ class Outbox:
         self._acked = set()
         self._reference_cache = None
         self._ready_old, self._ready_new, self._ready_config = [], [], []
+        self._ready_live = {"PERIODIC": [], "STATE": []}
         self._queue_version = 0
         self.operation_metrics = {}
         self.inflight = set()
@@ -284,6 +285,7 @@ class Outbox:
             path=path,
             kind=payload["message_type"],
             delivery_kind=payload.get("delivery_kind"),
+            assessment_type=payload.get("assessment_type"),
             scans=self._scans(payload),
             generated_at=payload["generated_at"],
             payload_bytes=len(canonical(payload)) if payload_bytes is None else payload_bytes,
@@ -307,12 +309,23 @@ class Outbox:
         heapq.heappush(self._ready_new, (-entry[0], entry[1], mid))
         if item["kind"] == "edge_configuration":
             heapq.heappush(self._ready_config, entry)
+        live_kind = item["delivery_kind"] or item["assessment_type"]
+        if live_kind in self._ready_live:
+            heapq.heappush(self._ready_live[live_kind], (-entry[0], entry[1], mid))
         self._compact_ready()
 
     def _compact_ready(self):
         # Lazy invalid entries are bounded, including during long retry loops.
         if (
-            max(len(self._ready_old), len(self._ready_new), len(self._ready_config))
+            max(
+                len(heap)
+                for heap in (
+                    self._ready_old,
+                    self._ready_new,
+                    self._ready_config,
+                    *self._ready_live.values(),
+                )
+            )
             <= 2 * len(self.index) + 64
         ):
             return
@@ -326,7 +339,18 @@ class Outbox:
         self._ready_config = [
             entry for entry in entries if self.index[entry[2]]["kind"] == "edge_configuration"
         ]
-        for heap in (self._ready_old, self._ready_new, self._ready_config):
+        for kind in self._ready_live:
+            self._ready_live[kind] = [
+                (-order, version, mid)
+                for order, version, mid in entries
+                if (self.index[mid]["delivery_kind"] or self.index[mid]["assessment_type"]) == kind
+            ]
+        for heap in (
+            self._ready_old,
+            self._ready_new,
+            self._ready_config,
+            *self._ready_live.values(),
+        ):
             heapq.heapify(heap)
 
     def _ready(self, heap):
@@ -680,6 +704,39 @@ class Outbox:
         if pinned and mid in self.index and self.index[mid]["state"] == "pending":
             self._queue_pending(mid)
 
+    def next_ready_many(self, limit=16):
+        if type(limit) is not int or not 1 <= limit <= 16:
+            raise ValueError("invalid selection batch")
+        before = set(self.inflight)
+        rows = []
+        live = list(self._ready_live.values())
+        try:
+            for _ in range(limit):
+                mid = None
+                # Configuration stays first. Reserve one opportunity per turn
+                # for current original scans and judgments during old backlog.
+                if self._ready(self._ready_config) is None:
+                    while live and mid is None:
+                        mid = self._ready(live.pop(0))
+                if mid is None:
+                    row = self.next_ready(pin=True)
+                else:
+                    self.inflight.add(mid)
+                    row = self.get(mid)
+                if row is None:
+                    break
+                rows.append(row)
+            return rows
+        except BaseException:
+            self.unpin_many(tuple(self.inflight - before))
+            raise
+
+    def unpin_many(self, mids):
+        if len(mids) > 16:
+            raise ValueError("invalid release batch")
+        for mid in mids:
+            self.unpin(mid)
+
     def _change(self, mid, *, now=None, **changes):
         record = self.get(mid)
         record.update(changes)
@@ -697,7 +754,7 @@ class Outbox:
     def delivered(self, mid, received_at, *, now=None):
         self.delivered_many([(mid, received_at)], now=now)
 
-    def delivered_many(self, receipts, *, now=None):
+    def delivered_many(self, receipts, *, now=None, release_pins=False):
         if not 1 <= len(receipts) <= 8 or len({mid for mid, _ in receipts}) != len(receipts):
             raise ValueError("invalid bounded ACK batch")
         items = {mid: self.index[mid] for mid, _ in receipts}
@@ -741,6 +798,8 @@ class Outbox:
         for mid, item in items.items():
             item["state"] = "acked"
             self._acked.add(mid)
+            if release_pins:
+                self.inflight.discard(mid)
             if item["kind"] == "edge_assessment":
                 self._reference_cache = None
         active, referenced = self._protected(now)

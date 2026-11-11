@@ -175,6 +175,28 @@ def test_retry_heap_compaction_retains_pinned_and_pending_records(tmp_path):
         assert selected == {b["message_id"] for b in bodies}
 
 
+def test_batch_gives_live_periodic_and_state_a_slot_during_evidence_backlog(tmp_path):
+    from copy import deepcopy
+    from uuid import uuid4
+
+    from test_v2_judgment_delivery import judgment_bundle
+
+    bundle = judgment_bundle()
+    periodic = message()
+    with Outbox(tmp_path) as store:
+        store.enqueue_bundle(bundle)
+        store.enqueue(periodic)
+        for _ in range(20):
+            body = deepcopy(bundle[0])
+            body["message_id"] = str(uuid4())
+            store.enqueue(body)
+        selected = store.next_ready_many(2)
+        assert {r["payload"]["message_id"] for r in selected} == {
+            periodic["message_id"],
+            bundle[-1]["message_id"],
+        }
+
+
 def test_writing_and_acking_do_not_rescan_every_queued_file(tmp_path, monkeypatch):
     with Outbox(tmp_path) as store:
         for _ in range(40):
