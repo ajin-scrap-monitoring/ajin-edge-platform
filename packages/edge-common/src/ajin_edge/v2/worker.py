@@ -54,10 +54,14 @@ class DeliveryWorker:
         quarantines = []
         sent = 0
         stopped = False
+        periodic_turn = False
         reasons, progress, retries = [], [], []
 
         def dispatch(payload, is_status):
             nonlocal sent
+            row = rows.get(payload["message_id"])
+            if row is not None and hasattr(self.transport, "record_registration"):
+                self.transport.record_registration(payload["message_id"], row["order"])
             tasks[asyncio.create_task(self.transport.send(payload))] = (payload, is_status)
             sent += 1
 
@@ -71,7 +75,23 @@ class DeliveryWorker:
                 and not stopped
                 and self.clock() - send_started < 2
             ):
-                row = ready.popleft()
+                periodic = next(
+                    (r for r in ready if r["payload"].get("delivery_kind") == "PERIODIC"), None
+                )
+                if periodic is not None:
+                    ready.remove(periodic)
+                    row = periodic
+                else:
+                    # Keep the periodic lane available while its durable ACK is
+                    # pending, rather than filling it with slow evidence HTTP.
+                    if (
+                        periodic_turn
+                        and self.network_slots > 1
+                        and sum(p.get("delivery_kind") != "PERIODIC" for p, _ in tasks.values())
+                        >= self.network_slots - 1
+                    ):
+                        break
+                    row = ready.popleft()
                 dispatch(row["payload"], False)
 
         def start_selection():
@@ -81,29 +101,53 @@ class DeliveryWorker:
                 selection_task is None
                 and not selection_exhausted
                 and not stopped
-                and len(ready) < self.network_slots
+                and (
+                    len(ready) < self.network_slots
+                    or (
+                        periodic_turn
+                        and not any(
+                            r["payload"].get("delivery_kind") == "PERIODIC" for r in rows.values()
+                        )
+                    )
+                )
                 and available > 0
                 and self.clock() - send_started < 2
             ):
                 # Only one selection can reserve these slots. ACK completion
                 # may free additional slots, but cannot increase this batch.
-                selection_task = asyncio.create_task(self.store.call("next_ready_many", available))
+                selection_task = asyncio.create_task(
+                    self.store.call("next_ordered_many", available)
+                )
 
         def start_flush(*, force=False):
             nonlocal ack_task, ack_batch
-            if ack_task is None and acknowledgements and (force or len(acknowledgements) >= 8):
+            periodic_waiting = any(
+                rows[mid]["payload"].get("delivery_kind") == "PERIODIC"
+                for mid, _ in acknowledgements
+            )
+            if (
+                ack_task is None
+                and acknowledgements
+                and (force or periodic_waiting or len(acknowledgements) >= 8)
+            ):
                 ack_batch = acknowledgements[:8]
                 del acknowledgements[: len(ack_batch)]
                 ack_task = asyncio.create_task(
-                    self.store.call("delivered_many", ack_batch, release_pins=True)
+                    self.store.call(
+                        "delivered_many",
+                        ack_batch,
+                        release_pins=True,
+                        _priority=0 if periodic_waiting else 2,
+                    )
                 )
 
         async def finish_flush():
-            nonlocal ack_task, ack_batch
+            nonlocal ack_task, ack_batch, selection_exhausted
             await asyncio.shield(ack_task)
             for mid, _ in ack_batch:
                 rows.pop(mid, None)
             ack_task, ack_batch = None, []
+            selection_exhausted = False
 
         async def drain_acks():
             if ack_task is not None:
@@ -116,10 +160,11 @@ class DeliveryWorker:
             # Begin with a bounded selection, then overlap replacement reads
             # with HTTP after durable ACKs free slots. Pins retain unsent bodies
             # and remote ACKs until durable confirmation.
-            selection_task = asyncio.create_task(self.store.call("next_ready_many", 16))
+            selection_task = asyncio.create_task(self.store.call("next_ordered_many", 16))
             batch = await asyncio.shield(selection_task)
             selection_task = None
             selection_exhausted = not batch
+            periodic_turn = any(r["payload"].get("delivery_kind") == "PERIODIC" for r in batch)
             ready.extend(batch)
             rows.update((r["payload"]["message_id"], r) for r in batch)
             send_started = self.clock()
@@ -149,6 +194,9 @@ class DeliveryWorker:
                     batch = selection_task.result()
                     selection_task = None
                     selection_exhausted = not batch
+                    periodic_turn |= any(
+                        r["payload"].get("delivery_kind") == "PERIODIC" for r in batch
+                    )
                     ready.extend(batch)
                     rows.update((r["payload"]["message_id"], r) for r in batch)
                 errors = []

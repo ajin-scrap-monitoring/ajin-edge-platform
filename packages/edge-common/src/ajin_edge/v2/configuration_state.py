@@ -128,6 +128,7 @@ def control_path(base):
 
 def effective_runtime(base):
     result = deepcopy(base)
+    result.setdefault("camera_config_revision", base["configuration"]["config_revision"])
     if "configuration_state_file" in base:
         state = read_state(base)
         result["configuration"] = state["active_registration"]

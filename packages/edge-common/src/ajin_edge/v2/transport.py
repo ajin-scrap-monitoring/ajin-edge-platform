@@ -4,6 +4,7 @@ import asyncio
 import json
 import random
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -61,9 +62,15 @@ class DeliveryClient:
         self.base_url, self.token, self.client = base_url.rstrip("/"), token, client
         self.timeout = timeout
         self.metrics = {}
+        self.registrations = {}
+
+    def record_registration(self, message_id, order):
+        self.registrations[message_id] = order
 
     async def send(self, payload):
         started = time.monotonic()
+        started_at = datetime.now(UTC).isoformat()
+        registered_ns = self.registrations.pop(payload["message_id"], None)
         try:
             result = await asyncio.wait_for(self._send(payload), self.timeout)
         except (TimeoutError, httpx.HTTPError):
@@ -84,6 +91,38 @@ class DeliveryClient:
         metric["max_elapsed_ms"] = max(metric["max_elapsed_ms"], elapsed)
         outcome = result.reason or result.kind
         metric["results"][outcome] = metric["results"].get(outcome, 0) + 1
+        if kind == "PERIODIC":
+            recent = metric.setdefault("recent_attempts", [])
+            recent.append(
+                {
+                    "message_id": payload["message_id"],
+                    "generated_at": payload["generated_at"],
+                    "registered_at": (
+                        datetime.fromtimestamp(registered_ns / 1e9, UTC).isoformat()
+                        if registered_ns is not None
+                        else None
+                    ),
+                    "send_started_at": started_at,
+                    "completed_at": datetime.now(UTC).isoformat(),
+                    "elapsed_ms": elapsed,
+                    "result": result.kind,
+                    "reason": result.reason,
+                    "received_at": result.received_at,
+                }
+            )
+            del recent[:-16]
+        if result.kind == "accepted" and kind == "edge_status":
+            # Local receipt evidence only; does not add fields to the wire contract.
+            metric["latest_accepted_status"] = {
+                "message_id": payload["message_id"],
+                "generated_at": payload["generated_at"],
+                "observed_at": datetime.now(UTC).isoformat(),
+                "received_at": result.received_at,
+                "overall_state": payload["overall_state"],
+                "reason_codes": list(payload["reason_codes"]),
+                "services": deepcopy(payload.get("services", [])),
+                "sensors": deepcopy(payload.get("sensors", [])),
+            }
         if result.kind == "accepted" and kind in ("PERIODIC", "STATE"):
             generated = payload.get("generated_at")
             if generated is not None and (

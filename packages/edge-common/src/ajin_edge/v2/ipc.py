@@ -143,7 +143,10 @@ async def serve_delivery(store, endpoint, *, site_id, edge_id, latest_status=Non
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "invalid judgment bundle")
 
     async def stats(request, context):
-        return await store.call("stats", audit=False)
+        try:
+            return store.realtime_stats()
+        except RuntimeError:
+            await context.abort(grpc.StatusCode.UNAVAILABLE, "storage observation unavailable")
 
     async def bounded_bundle(decoded, context):
         request, size = decoded

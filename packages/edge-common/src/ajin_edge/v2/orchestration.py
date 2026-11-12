@@ -79,6 +79,7 @@ class Orchestrator:
         self.judgment = SectionJudgment(self.config)
         self.loss_recovery = OutboxLossRecovery()
         self.recovery_evidence = None
+        self.recovery_checks = {}
         self.scan_update_alarm_enabled = scan_update_alarm_enabled
         self.scan_alarms = {sensor: ScanUpdateAlarm() for sensor in self.sensors}
 
@@ -251,10 +252,6 @@ class Orchestrator:
 
     def assessment_bundle(self, *, now_ns=None, generated_at=None):
         body, used = self._evaluate(now_ns=now_ns, generated_at=generated_at)
-        self.recovery_evidence = (
-            time.monotonic_ns() if now_ns is None else now_ns,
-            frozenset(r["scan_id"] for r in body["evidence"]["scans"]),
-        )
         return [self.evidence(o, [body["assessment_id"]]) for o in used] + [body]
 
     def event(self, kind, stage, used_observations, *, rule_version, assessment_id=None):
@@ -344,6 +341,15 @@ class Orchestrator:
         if evidence_known:
             current_ids.update(evidence[1])
         missing = bool(current_ids.intersection(stats["unavailable_evidence_scan_ids"]))
+        self.recovery_checks = {
+            "scans_fresh": states == {"FRESH"},
+            "services_healthy": services_healthy,
+            "delivery_healthy": context["healthy"],
+            "evidence_known": evidence_known,
+            "evidence_age_ms": (now_ns - evidence[0]) / 1_000_000 if evidence else None,
+            "evidence_missing": missing,
+            "storage_observation_epoch": stats.get("storage_observation_epoch", 0),
+        }
         loss_active = self.loss_recovery.observe(
             stats["lost_messages"],
             healthy=states == {"FRESH"}

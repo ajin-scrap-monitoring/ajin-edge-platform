@@ -142,6 +142,35 @@ class LocalStatus:
             raise
 
 
+class LatestStatusWriter:
+    """One in-flight write plus one latest local diagnostic snapshot.
+
+    These replaceable status gauges are not raw scans or durable judgments.
+    Capture the real evaluation time before queuing, never at disk completion.
+    """
+
+    def __init__(self, status):
+        self.status = status
+        self.pending = None
+        self.ready = asyncio.Event()
+
+    def offer(self, state="HEALTHY", **telemetry):
+        self.pending = self.status._snapshot(state, telemetry)
+        self.ready.set()
+
+    async def run(self):
+        while True:
+            await self.ready.wait()
+            snapshot, self.pending = self.pending, None
+            self.ready.clear()
+            task = asyncio.create_task(asyncio.to_thread(self.status._persist, snapshot))
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
+
+
 class PendingSender:
     def __init__(self, client, status, *, capacity=10):
         self.client, self.status, self.capacity = client, status, capacity
@@ -422,6 +451,10 @@ def service_snapshots(config, *, loss_tracker=None, now=None, identities=None):
                 if name.startswith("lidar-driver-")
                 else registration["config_revision"]
             )
+            if name == "camera-edge":
+                expected_revision = config.get(
+                    "camera_config_revision", registration["config_revision"]
+                )
             if (
                 source["edge_id"] != registration["edge_id"]
                 or source["site_id"] != registration["site_id"]
@@ -458,7 +491,6 @@ def service_snapshots(config, *, loss_tracker=None, now=None, identities=None):
 
 def recovery_delivery_healthy(config, *, now=None):
     """Local proof of current raw/judgment delivery, not just old backlog ACKs."""
-    now = datetime.now(UTC) if now is None else now
     try:
         path = Path(config["status_dir"]) / "measurement-uplink.json"
         if path.stat().st_size > 65536:
@@ -480,6 +512,9 @@ def recovery_delivery_healthy(config, *, now=None):
                 sensor["sensor_id"]
             ]
             stamps.extend([proof["generated_at"], proof["observed_at"], proof["acquired_at"]])
+        # A concurrent atomic replacement can contain a timestamp newer than
+        # a clock sampled before read_bytes. Compare only after owning the data.
+        now = datetime.now(UTC) if now is None else now
         return all(0 <= (now - datetime.fromisoformat(at)).total_seconds() <= 15 for at in stamps)
     except (OSError, ValueError, KeyError, TypeError):
         return False
@@ -510,6 +545,7 @@ async def orchestrator(config, stop):
     )
     orch.loss_recovery = OutboxLossRecovery(previous_loss_high_water(config))
     status = LocalStatus(config, "edge-orchestrator")
+    status_writer = LatestStatusWriter(status)
     service_losses, observation_losses = LossTracker(), LossTracker()
     observation_count = 0
     observation_instance = None
@@ -582,7 +618,8 @@ async def orchestrator(config, stop):
                             and all(v for k, v in identities.items() if k != "camera-edge"),
                             "epoch": tuple(
                                 sorted((k, v) for k, v in identities.items() if k != "camera-edge")
-                            ),
+                            )
+                            + (("storage", stats.get("storage_observation_epoch", 0)),),
                         },
                     )
                     signature = canonical(
@@ -609,10 +646,11 @@ async def orchestrator(config, stop):
                 except grpc.aio.AioRpcError:
                     status.reason = "LOCAL_DELIVERY_UNAVAILABLE"
                     orch.loss_recovery.interrupt()
-                await status.write_async(
+                status_writer.offer(
                     "DEGRADED" if status.reason else "HEALTHY",
                     observations=orch.observations,
                     loss_recovery=orch.loss_recovery.snapshot(time.monotonic()),
+                    recovery_checks=orch.recovery_checks,
                     scan_update_alarms=orch.scan_update_alarms(now_ns=time.monotonic_ns()),
                     scan_update_alarm_enabled=orch.scan_update_alarm_enabled,
                 )
@@ -625,12 +663,25 @@ async def orchestrator(config, stop):
                 # slot is free; a slow durable write must not evict a judgment.
                 await sender.wait_for_capacity()
                 start = time.monotonic()
-                sender.offer(await asyncio.to_thread(orch.assessment_bundle))
+                bundle = await asyncio.to_thread(orch.assessment_bundle)
+                # Recovery state belongs to this event loop. A worker publishing
+                # during status() could appear newer than its captured now_ns.
+                orch.recovery_evidence = (
+                    time.monotonic_ns(),
+                    frozenset(r["scan_id"] for r in bundle[-1]["evidence"]["scans"]),
+                )
+                sender.offer(bundle)
                 await asyncio.sleep(max(0, 1 - (time.monotonic() - start)))
 
         with Watchdog() as watchdog:
             await supervise(
-                stop, consume(), periodic(), judgments(), sender.run(), watchdog.pulse()
+                stop,
+                consume(),
+                periodic(),
+                judgments(),
+                sender.run(),
+                status_writer.run(),
+                watchdog.pulse(),
             )
 
 

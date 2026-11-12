@@ -11,15 +11,15 @@ import json
 import os
 import shutil
 import time
-from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from collections import Counter, deque
 from copy import deepcopy
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
 from .contracts import validate_message
 from .processing import canonical, identifier
+from .storage_executor import StorageExecutor
 
 
 class CapacityError(RuntimeError):
@@ -76,9 +76,14 @@ class Outbox:
         self._acked = set()
         self._reference_cache = None
         self._ready_old, self._ready_new, self._ready_config = [], [], []
+        self._ordered_periodic, self._other_old, self._other_new = [], [], []
         self._ready_live = {"PERIODIC": [], "STATE": []}
         self._queue_version = 0
         self.operation_metrics = {}
+        self.recent_storage_stalls = deque(maxlen=16)
+        self._realtime_stats = None
+        self._realtime_loss = None
+        self._storage_observation_epoch = 0
         self.inflight = set()
         self.executor = None
         self._file_allocations = {}
@@ -98,7 +103,12 @@ class Outbox:
             if self.used_bytes() > self.limit:
                 raise CapacityError("existing directory exceeds configured budget")
             self._save_meta()
-            self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v2-storage")
+            self._realtime_loss = self._loss_stats()
+            self._realtime_stats = {
+                **deepcopy(self.stats(audit=False)),
+                "storage_observation_epoch": 0,
+            }
+            self.executor = StorageExecutor()
         except BaseException:
             self.close()
             raise
@@ -125,16 +135,25 @@ class Outbox:
         if not self.lock.closed:
             self.lock.close()
 
-    async def call(self, method, *args, **kwargs):
-        """Serialize blocking filesystem work outside the service event loop."""
-        return await asyncio.get_running_loop().run_in_executor(
-            self.executor, partial(self._timed_call, method, time.monotonic(), args, kwargs)
+    async def call(self, method, *args, _priority=None, **kwargs):
+        """One durable writer; periodic work can pass queued background work."""
+        priority = 2 if _priority is None else _priority
+        if method == "enqueue" and args and args[0].get("delivery_kind") == "PERIODIC":
+            priority = 0
+        elif method == "next_ordered_many":
+            priority = 1
+        future = self.executor.submit_priority(
+            priority, partial(self._timed_call, method, time.monotonic(), args, kwargs)
         )
+        return await asyncio.wrap_future(future)
 
     def _timed_call(self, method, queued, args, kwargs):
         started = time.monotonic()
+        completed = False
         try:
-            return getattr(self, method)(*args, **kwargs)
+            result = getattr(self, method)(*args, **kwargs)
+            completed = True
+            return result
         finally:
             elapsed = (time.monotonic() - started) * 1000
             wait = (started - queued) * 1000
@@ -153,6 +172,63 @@ class Outbox:
             metric["queue_ms"] += wait
             metric["max_run_ms"] = max(metric["max_run_ms"], elapsed)
             metric["max_queue_ms"] = max(metric["max_queue_ms"], wait)
+            try:
+                # Publish only owned, completed state, never partially mutated metadata.
+                snapshot = deepcopy(self.stats(audit=False)) if completed else None
+            except BaseException:
+                self._realtime_stats = None
+                completed = False
+                raise
+            finally:
+                total_elapsed = (time.monotonic() - started) * 1000
+                metric["run_ms"] += total_elapsed - elapsed
+                metric["max_run_ms"] = max(metric["max_run_ms"], total_elapsed)
+                if max(total_elapsed, wait) >= 250:
+                    self.recent_storage_stalls.append(
+                        {
+                            "method": method,
+                            "completed_at": datetime.now(UTC).isoformat(),
+                            "run_ms": total_elapsed,
+                            "queue_ms": wait,
+                            "completed": completed,
+                        }
+                    )
+                if not completed:
+                    self._storage_observation_epoch += 1
+                if completed:
+                    snapshot["storage_metrics"] = deepcopy(self.operation_metrics)
+                    snapshot["recent_storage_stalls"] = deepcopy(list(self.recent_storage_stalls))
+                    snapshot["storage_observation_epoch"] = self._storage_observation_epoch
+                    self._realtime_stats = snapshot
+                else:
+                    self._realtime_stats = None
+
+    def _loss_stats(self):
+        return deepcopy(
+            {
+                key: self.meta[key]
+                for key in (
+                    "lost_messages",
+                    "loss_from",
+                    "loss_to",
+                    "last_loss_reason",
+                    "unavailable_evidence_scan_ids",
+                )
+            }
+        )
+
+    def realtime_stats(self):
+        """Completed queue gauges plus immediately observed loss/reference state.
+
+        The recovery observation gap bounds evaluations, not individual writes.
+        Independent service and ACK timestamps still bound progress freshness.
+        """
+        snapshot = self._realtime_stats
+        if snapshot is None:
+            raise RuntimeError("storage observation unavailable")
+        result = deepcopy(snapshot)
+        result.update(deepcopy(self._realtime_loss))
+        return result
 
     def inspect(self, mid):
         item = self.index.get(mid)
@@ -331,6 +407,11 @@ class Outbox:
         live_kind = item["delivery_kind"] or item["assessment_type"]
         if live_kind in self._ready_live:
             heapq.heappush(self._ready_live[live_kind], (-entry[0], entry[1], mid))
+        if item["delivery_kind"] == "PERIODIC":
+            heapq.heappush(self._ordered_periodic, entry)
+        else:
+            heapq.heappush(self._other_old, entry)
+            heapq.heappush(self._other_new, (-entry[0], entry[1], mid))
         self._compact_ready()
 
     def _compact_ready(self):
@@ -343,6 +424,9 @@ class Outbox:
                     self._ready_new,
                     self._ready_config,
                     *self._ready_live.values(),
+                    self._ordered_periodic,
+                    self._other_old,
+                    self._other_new,
                 )
             )
             <= 2 * len(self.index) + 64
@@ -364,11 +448,19 @@ class Outbox:
                 for order, version, mid in entries
                 if (self.index[mid]["delivery_kind"] or self.index[mid]["assessment_type"]) == kind
             ]
+        self._ordered_periodic = [
+            e for e in entries if self.index[e[2]]["delivery_kind"] == "PERIODIC"
+        ]
+        self._other_old = [e for e in entries if self.index[e[2]]["delivery_kind"] != "PERIODIC"]
+        self._other_new = [(-o, v, m) for o, v, m in self._other_old]
         for heap in (
             self._ready_old,
             self._ready_new,
             self._ready_config,
             *self._ready_live.values(),
+            self._ordered_periodic,
+            self._other_old,
+            self._other_new,
         ):
             heapq.heapify(heap)
 
@@ -718,6 +810,9 @@ class Outbox:
         self.meta["last_loss_reason"] = reason
         ids = self.meta["unavailable_evidence_scan_ids"] + sorted(self._scans(payload))
         self.meta["unavailable_evidence_scan_ids"] = list(dict.fromkeys(ids))[-32:]
+        # Expose loss before any slow persistence or eviction. Never let an
+        # in-flight write hide a changed loss count from recovery evaluation.
+        self._realtime_loss = self._loss_stats()
         self._save_meta()
 
     def next_ready(self, *, pin=False):
@@ -759,6 +854,38 @@ class Outbox:
                 if row is None:
                     break
                 rows.append(row)
+            return rows
+        except BaseException:
+            self.unpin_many(tuple(self.inflight - before))
+            raise
+
+    def next_ordered_many(self, limit=16):
+        """One oldest periodic reservation; other message lanes remain concurrent."""
+        if type(limit) is not int or not 1 <= limit <= 16:
+            raise ValueError("invalid selection batch")
+        before = set(self.inflight)
+        periodic_busy = any(
+            self.index[m]["delivery_kind"] == "PERIODIC" for m in before if m in self.index
+        )
+        rows = []
+        state_reserved = False
+        try:
+            for _ in range(limit):
+                mid = self._ready(self._ready_config)
+                if mid is None and not periodic_busy:
+                    mid = self._ready(self._ordered_periodic)
+                    if mid is not None:
+                        periodic_busy = True
+                if mid is None and not state_reserved:
+                    mid = self._ready(self._ready_live["STATE"])
+                    state_reserved = True
+                if mid is None:
+                    mid = self._ready(self._other_new if self.latest else self._other_old)
+                    self.latest = not self.latest
+                if mid is None:
+                    break
+                self.inflight.add(mid)
+                rows.append(self.get(mid))
             return rows
         except BaseException:
             self.unpin_many(tuple(self.inflight - before))
@@ -889,6 +1016,7 @@ class Outbox:
             self._audit_usage()
         return {
             "storage_metrics": deepcopy(self.operation_metrics),
+            "recent_storage_stalls": deepcopy(list(self.recent_storage_stalls)),
             "pending_messages": self._state_counts["pending"],
             "pending_bytes": self._pending_bytes,
             "quarantined_messages": self._state_counts["quarantine"],
