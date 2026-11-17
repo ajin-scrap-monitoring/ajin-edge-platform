@@ -91,7 +91,7 @@ class DeliveryClient:
         metric["max_elapsed_ms"] = max(metric["max_elapsed_ms"], elapsed)
         outcome = result.reason or result.kind
         metric["results"][outcome] = metric["results"].get(outcome, 0) + 1
-        if kind == "PERIODIC":
+        if kind in ("PERIODIC", "STATE"):
             recent = metric.setdefault("recent_attempts", [])
             recent.append(
                 {
@@ -108,6 +108,16 @@ class DeliveryClient:
                     "result": result.kind,
                     "reason": result.reason,
                     "received_at": result.received_at,
+                    "scan_times": [
+                        {
+                            "sensor_id": s["sensor_id"],
+                            "scan_id": s["scan"].get("scan_id"),
+                            "acquired_at": s["scan"].get("acquired_at"),
+                        }
+                        for s in payload.get("sensors", [])
+                        if s.get("scan") is not None
+                    ],
+                    "judgment_reason_codes": list(payload.get("reason_codes", [])),
                 }
             )
             del recent[:-16]

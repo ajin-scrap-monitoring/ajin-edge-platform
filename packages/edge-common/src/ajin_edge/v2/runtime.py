@@ -25,6 +25,7 @@ from .auxiliary_storage import STATUS_RESERVE, auxiliary_bytes
 from .configuration_state import control_path, effective_runtime
 from .contracts import validate_message
 from .ipc import OBSERVATIONS, OPTIONS, DeliveryStub, ObservationBroker, serve_delivery
+from .judgment import is_independent
 from .loss_recovery import OutboxLossRecovery
 from .orchestration import ConfigurationGate, Orchestrator
 from .outbox import CapacityError, Outbox
@@ -535,6 +536,39 @@ def previous_loss_high_water(config):
         return 0
 
 
+async def wait_for_current_pair(orch, changed, *, timeout=0.1):
+    """Allow a lagging live scan to arrive, never substitute an older matching pair.
+
+    A bounded wait affects scheduling only. Judgment still applies its original
+    freshness, clock-domain and pair-tolerance checks, including after timeout.
+    """
+    model = orch.judgment.model
+    if not is_independent(model) or model.get("fusion") is None:
+        return "NOT_READY"
+    deadline = time.monotonic() + timeout
+    while True:
+        changed.clear()
+        now_ns = time.monotonic_ns()
+        histories = orch.judgment.snapshot(now_ns)
+        if any(not h for h in histories.values()):
+            return "NOT_READY"
+        latest = [h[-1]["scan"] for h in histories.values()]
+        if any(now_ns - int(s["acquired_monotonic_ns"]) > 1000000000 for s in latest):
+            return "NOT_READY"
+        if len({s["clock_domain_id"] for s in latest}) != 1:
+            return "NOT_READY"
+        stamps = [int(s["acquired_monotonic_ns"]) for s in latest]
+        if max(stamps) - min(stamps) <= model["window"]["pair_tolerance_ms"] * 1000000:
+            return "ALIGNED"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return "TIMEOUT"
+        try:
+            await asyncio.wait_for(changed.wait(), remaining)
+        except TimeoutError:
+            return "TIMEOUT"
+
+
 async def orchestrator(config, stop):
     registration = config["configuration"]
     orch, gate = (
@@ -549,6 +583,7 @@ async def orchestrator(config, stop):
     service_losses, observation_losses = LossTracker(), LossTracker()
     observation_count = 0
     observation_instance = None
+    observation_changed = asyncio.Event()
     async with grpc.aio.insecure_channel(config["delivery_endpoint"], options=OPTIONS) as channel:
         client = DeliveryStub(channel)
         # One pending judgment bundle, bounded at 2*8 evidence scans plus its assessment.
@@ -572,6 +607,7 @@ async def orchestrator(config, stop):
                                 status.reason = "OBSERVATION_CONFIG_MISMATCH"
                                 continue
                             if orch.ingest(observation["sensor"], now_ns=time.monotonic_ns()):
+                                observation_changed.set()
                                 status.advanced()
                                 if status.reason == "OBSERVATIONS_UNAVAILABLE":
                                     status.reason = ""
@@ -663,6 +699,7 @@ async def orchestrator(config, stop):
                 # slot is free; a slow durable write must not evict a judgment.
                 await sender.wait_for_capacity()
                 start = time.monotonic()
+                await wait_for_current_pair(orch, observation_changed)
                 bundle = await asyncio.to_thread(orch.assessment_bundle)
                 # Recovery state belongs to this event loop. A worker publishing
                 # during status() could appear newer than its captured now_ns.
