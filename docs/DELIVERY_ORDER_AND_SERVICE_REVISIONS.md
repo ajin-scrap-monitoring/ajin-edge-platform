@@ -6,9 +6,29 @@ EVIDENCE and assessment traffic retain bounded parallel delivery. Configuration 
 
 `camera_config_revision` identifies the camera configuration independently of LiDAR calibration. If omitted, the base runtime registration revision is used before applying calibration control state. Camera identity, freshness (15 seconds), and configured revision are still validated. LiDAR calibration activation does not falsely invalidate a running camera.
 
+When replacing the base registration independently of the camera, explicitly retain
+the actual camera revision in `camera_config_revision`. A base revision change is
+not a camera deployment. Validate the camera identity and current report before
+setting this value. A dedicated orchestrator runtime mount can apply this setting
+without restarting unrelated roles watching the shared runtime file; keep its
+non-camera fields synchronized with the shared base during later deployments.
+
+Before independent-section judgment, the orchestrator permits at most 100 ms for
+a lagging new observation to arrive when the latest A/B scans exceed the existing
+pair tolerance. It does not select an older matching pair or rewrite timestamps.
+Missing, stale or different-clock inputs are not declared aligned. On timeout the
+normal judgment runs and retains its mismatch/unavailable reasons. The wait counts
+within the existing one-second judgment scheduling interval.
+
 Local uplink diagnostics include `http_delivery.PERIODIC.recent_attempts` (at most 16 completed attempts). Fields: message_id, generated_at, registered_at, send_started_at, completed_at, elapsed_ms, result, reason, received_at. Registration time comes from the durable record's UTC wall-clock order; send/completion timestamps are Pi UTC wall-clock observations; elapsed_ms uses a monotonic clock. The ring is volatile, rotates, and is not a historical audit log. It contains no point arrays, video, or credentials. Poll and deduplicate by message ID plus send-start time during an agreed diagnostic window. In-flight/cancelled attempts may not have a completed entry.
 
 Accepted status diagnostics retain the exact accepted message ID, generation/receipt time and owned copies of service/sensor status fields. This proves the sender validated the ACK for that body, not dashboard rendering or database internals. The backend wire contract is unchanged.
+
+STATE also retains a bounded 16-attempt ring. Both rings include
+`judgment_reason_codes`; PERIODIC includes `scan_times` with only sensor ID, scan ID
+and acquisition time. These fields permit acquisition-to-ACK correlation without
+copying point arrays. They do not reconstruct attempts lost before diagnostics
+were enabled, or certify the backend clock is synchronized.
 
 A periodic ACK triggers immediate durable ACK flushing and reopens selection after persistence. The next periodic record can therefore proceed while a slower independent EVIDENCE request is still running, without overlapping periodic requests or bypassing durable confirmation.
 
