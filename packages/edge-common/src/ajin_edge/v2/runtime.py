@@ -8,6 +8,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -536,7 +537,14 @@ def previous_loss_high_water(config):
         return 0
 
 
-async def wait_for_current_pair(orch, changed, *, timeout=0.1):
+@dataclass(frozen=True)
+class JudgmentInput:
+    state: str
+    histories: dict | None
+    captured_ns: int
+
+
+async def wait_for_current_pair(orch, changed, *, timeout=0.3):
     """Allow a lagging live scan to arrive, never substitute an older matching pair.
 
     A bounded wait affects scheduling only. Judgment still applies its original
@@ -544,29 +552,31 @@ async def wait_for_current_pair(orch, changed, *, timeout=0.1):
     """
     model = orch.judgment.model
     if not is_independent(model) or model.get("fusion") is None:
-        return "NOT_READY"
+        return JudgmentInput("NOT_READY", None, time.monotonic_ns())
     deadline = time.monotonic() + timeout
     while True:
         changed.clear()
         now_ns = time.monotonic_ns()
         histories = orch.judgment.snapshot(now_ns)
         if any(not h for h in histories.values()):
-            return "NOT_READY"
+            return JudgmentInput("NOT_READY", histories, now_ns)
         latest = [h[-1]["scan"] for h in histories.values()]
         if any(now_ns - int(s["acquired_monotonic_ns"]) > 1000000000 for s in latest):
-            return "NOT_READY"
+            return JudgmentInput("NOT_READY", histories, now_ns)
         if len({s["clock_domain_id"] for s in latest}) != 1:
-            return "NOT_READY"
+            return JudgmentInput("NOT_READY", histories, now_ns)
         stamps = [int(s["acquired_monotonic_ns"]) for s in latest]
         if max(stamps) - min(stamps) <= model["window"]["pair_tolerance_ms"] * 1000000:
-            return "ALIGNED"
+            return JudgmentInput("ALIGNED", histories, now_ns)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return "TIMEOUT"
+            return JudgmentInput("TIMEOUT", histories, now_ns)
         try:
             await asyncio.wait_for(changed.wait(), remaining)
         except TimeoutError:
-            return "TIMEOUT"
+            # Read once more at the deadline: a scan can arrive while the event
+            # wait times out. The returned snapshot is the one actually checked.
+            continue
 
 
 async def orchestrator(config, stop):
@@ -584,6 +594,7 @@ async def orchestrator(config, stop):
     observation_count = 0
     observation_instance = None
     observation_changed = asyncio.Event()
+    recent_judgments = deque(maxlen=16)
     async with grpc.aio.insecure_channel(config["delivery_endpoint"], options=OPTIONS) as channel:
         client = DeliveryStub(channel)
         # One pending judgment bundle, bounded at 2*8 evidence scans plus its assessment.
@@ -689,6 +700,7 @@ async def orchestrator(config, stop):
                     recovery_checks=orch.recovery_checks,
                     scan_update_alarms=orch.scan_update_alarms(now_ns=time.monotonic_ns()),
                     scan_update_alarm_enabled=orch.scan_update_alarm_enabled,
+                    recent_judgments=list(recent_judgments),
                 )
                 await asyncio.sleep(max(0, 1 - (time.monotonic() - start)))
 
@@ -699,8 +711,35 @@ async def orchestrator(config, stop):
                 # slot is free; a slow durable write must not evict a judgment.
                 await sender.wait_for_capacity()
                 start = time.monotonic()
-                await wait_for_current_pair(orch, observation_changed)
-                bundle = await asyncio.to_thread(orch.assessment_bundle)
+                selected = await wait_for_current_pair(orch, observation_changed)
+                bundle = await asyncio.to_thread(
+                    orch.assessment_bundle, histories=selected.histories
+                )
+                recent_judgments.append(
+                    {
+                        "message_id": bundle[-1]["message_id"],
+                        "generated_at": bundle[-1]["generated_at"],
+                        "selection_state": selected.state,
+                        "captured_monotonic_ns": str(selected.captured_ns),
+                        "reason_codes": list(bundle[-1]["reason_codes"]),
+                        "anchors": [
+                            {
+                                "sensor_id": sid,
+                                **{
+                                    k: h[-1]["scan"][k]
+                                    for k in (
+                                        "scan_id",
+                                        "acquired_at",
+                                        "acquired_monotonic_ns",
+                                        "clock_domain_id",
+                                    )
+                                },
+                            }
+                            for sid, h in (selected.histories or {}).items()
+                            if h
+                        ],
+                    }
+                )
                 # Recovery state belongs to this event loop. A worker publishing
                 # during status() could appear newer than its captured now_ns.
                 orch.recovery_evidence = (
