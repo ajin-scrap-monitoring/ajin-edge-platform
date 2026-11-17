@@ -20,6 +20,19 @@ Missing, stale or different-clock inputs are not declared aligned. On timeout th
 normal judgment runs and retains its mismatch/unavailable reasons. The wait counts
 within the existing one-second judgment scheduling interval.
 
+The readiness check now hands its captured histories directly to the calculation
+worker. Profiles, point clouds and evidence use that same input snapshot; a new
+arrival cannot replace just one anchor between the check and calculation. Capture
+does not extend validity: histories are filtered again against the calculation
+start time, and existing completion-time expiry checks remain active. No search
+for an older matching pair is introduced.
+
+The local orchestrator status keeps at most 16 `recent_judgments`, correlating the
+message ID with selection state, capture time, actual selected scan IDs/timestamps
+and final reason codes. It contains no point arrays or credentials. A timeout or
+genuine mismatched input remains reportable and can be distinguished from a
+check-to-calculation race without modifying the backend wire contract.
+
 Local uplink diagnostics include `http_delivery.PERIODIC.recent_attempts` (at most 16 completed attempts). Fields: message_id, generated_at, registered_at, send_started_at, completed_at, elapsed_ms, result, reason, received_at. Registration time comes from the durable record's UTC wall-clock order; send/completion timestamps are Pi UTC wall-clock observations; elapsed_ms uses a monotonic clock. The ring is volatile, rotates, and is not a historical audit log. It contains no point arrays, video, or credentials. Poll and deduplicate by message ID plus send-start time during an agreed diagnostic window. In-flight/cancelled attempts may not have a completed entry.
 
 Accepted status diagnostics retain the exact accepted message ID, generation/receipt time and owned copies of service/sensor status fields. This proves the sender validated the ACK for that body, not dashboard rendering or database internals. The backend wire contract is unchanged.
