@@ -544,7 +544,7 @@ class JudgmentInput:
     captured_ns: int
 
 
-async def wait_for_current_pair(orch, changed, *, timeout=0.1):
+async def wait_for_current_pair(orch, changed, *, timeout=0.3):
     """Allow a lagging live scan to arrive, never substitute an older matching pair.
 
     A bounded wait affects scheduling only. Judgment still applies its original

@@ -62,6 +62,22 @@ async def test_existing_matching_pair_returns_without_waiting():
     assert (await wait_for_current_pair(orch, asyncio.Event(), timeout=0)).state == "ALIGNED"
 
 
+async def test_next_scan_can_arrive_after_one_scan_period():
+    cfg, orch, ms = prepared()
+    changed = asyncio.Event()
+
+    async def arrive():
+        await asyncio.sleep(0.16)
+        orch.ingest(observation(cfg, "lidar-b", 2, ms), now_ns=time.monotonic_ns())
+        changed.set()
+
+    task = asyncio.create_task(arrive())
+    result = await wait_for_current_pair(orch, changed)
+    await task
+    assert result.state == "ALIGNED"
+    assert result.histories["lidar-b"][-1]["scan"]["acquired_monotonic_ns"] == str(ms * 1000000)
+
+
 async def test_stale_or_different_clock_is_not_treated_as_aligned():
     _, orch, _ = prepared()
     orch.judgment.history["lidar-b"][-1]["scan"]["clock_domain_id"] = "other-boot"

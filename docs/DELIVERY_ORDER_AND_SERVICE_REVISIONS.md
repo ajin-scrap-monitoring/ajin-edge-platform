@@ -13,12 +13,12 @@ setting this value. A dedicated orchestrator runtime mount can apply this settin
 without restarting unrelated roles watching the shared runtime file; keep its
 non-camera fields synchronized with the shared base during later deployments.
 
-Before independent-section judgment, the orchestrator permits at most 100 ms for
+Before independent-section judgment, the orchestrator permits at most 300 ms for
 a lagging new observation to arrive when the latest A/B scans exceed the existing
 pair tolerance. It does not select an older matching pair or rewrite timestamps.
 Missing, stale or different-clock inputs are not declared aligned. On timeout the
 normal judgment runs and retains its mismatch/unavailable reasons. The wait counts
-within the existing one-second judgment scheduling interval.
+within the existing one-second judgment scheduling interval. The waiting budget covers a 100 ms scan period plus measured observation delivery latency (up to 165 ms in the diagnostic sample); it is distinct from the unchanged 100 ms pair tolerance.
 
 The readiness check now hands its captured histories directly to the calculation
 worker. Profiles, point clouds and evidence use that same input snapshot; a new
