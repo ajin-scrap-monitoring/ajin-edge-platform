@@ -165,7 +165,7 @@ class Orchestrator:
             "evidence": {"scans": [], "vision_observations": []},
         }
 
-    def _evaluate(self, *, now_ns=None, generated_at=None):
+    def _evaluate(self, *, now_ns=None, generated_at=None, histories=None):
         fixed_clock = now_ns is not None
         now_ns = time.monotonic_ns() if now_ns is None else now_ns
         body = self._empty_assessment()
@@ -173,10 +173,26 @@ class Orchestrator:
         enabled = fill_enabled(model)
         body["capabilities"]["fill"] = "ENABLED" if enabled else "NOT_VALIDATED"
         cloud_enabled = is_independent(model) and point_cloud.enabled(model)
-        histories = self.judgment.snapshot(now_ns) if cloud_enabled else None
+        if is_independent(model):
+            if histories is None:
+                histories = self.judgment.snapshot(now_ns)
+            else:
+                # The readiness check owns this snapshot. New arrivals must not
+                # change its anchors, but time spent waiting for a worker still
+                # counts against freshness. Never refresh captured timestamps.
+                histories = {
+                    sid: [
+                        o
+                        for o in h
+                        if 0
+                        <= now_ns - int(o["scan"]["acquired_monotonic_ns"])
+                        <= model["window"]["max_age_ms"] * 1000000
+                    ]
+                    for sid, h in histories.items()
+                }
         profile, reasons, used = (
             self.judgment.calculate(now_ns, histories=histories)
-            if cloud_enabled
+            if histories is not None
             else self.judgment.calculate(now_ns)
         )
         if (
@@ -250,8 +266,8 @@ class Orchestrator:
     def assessment(self, *, now_ns=None, generated_at=None):
         return self._evaluate(now_ns=now_ns, generated_at=generated_at)[0]
 
-    def assessment_bundle(self, *, now_ns=None, generated_at=None):
-        body, used = self._evaluate(now_ns=now_ns, generated_at=generated_at)
+    def assessment_bundle(self, *, now_ns=None, generated_at=None, histories=None):
+        body, used = self._evaluate(now_ns=now_ns, generated_at=generated_at, histories=histories)
         return [self.evidence(o, [body["assessment_id"]]) for o in used] + [body]
 
     def event(self, kind, stage, used_observations, *, rule_version, assessment_id=None):

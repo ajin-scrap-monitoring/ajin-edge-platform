@@ -13,12 +13,25 @@ setting this value. A dedicated orchestrator runtime mount can apply this settin
 without restarting unrelated roles watching the shared runtime file; keep its
 non-camera fields synchronized with the shared base during later deployments.
 
-Before independent-section judgment, the orchestrator permits at most 100 ms for
+Before independent-section judgment, the orchestrator permits at most 300 ms for
 a lagging new observation to arrive when the latest A/B scans exceed the existing
 pair tolerance. It does not select an older matching pair or rewrite timestamps.
 Missing, stale or different-clock inputs are not declared aligned. On timeout the
 normal judgment runs and retains its mismatch/unavailable reasons. The wait counts
-within the existing one-second judgment scheduling interval.
+within the existing one-second judgment scheduling interval. The waiting budget covers a 100 ms scan period plus measured observation delivery latency (up to 165 ms in the diagnostic sample); it is distinct from the unchanged 100 ms pair tolerance.
+
+The readiness check now hands its captured histories directly to the calculation
+worker. Profiles, point clouds and evidence use that same input snapshot; a new
+arrival cannot replace just one anchor between the check and calculation. Capture
+does not extend validity: histories are filtered again against the calculation
+start time, and existing completion-time expiry checks remain active. No search
+for an older matching pair is introduced.
+
+The local orchestrator status keeps at most 16 `recent_judgments`, correlating the
+message ID with selection state, capture time, actual selected scan IDs/timestamps
+and final reason codes. It contains no point arrays or credentials. A timeout or
+genuine mismatched input remains reportable and can be distinguished from a
+check-to-calculation race without modifying the backend wire contract.
 
 Local uplink diagnostics include `http_delivery.PERIODIC.recent_attempts` (at most 16 completed attempts). Fields: message_id, generated_at, registered_at, send_started_at, completed_at, elapsed_ms, result, reason, received_at. Registration time comes from the durable record's UTC wall-clock order; send/completion timestamps are Pi UTC wall-clock observations; elapsed_ms uses a monotonic clock. The ring is volatile, rotates, and is not a historical audit log. It contains no point arrays, video, or credentials. Poll and deduplicate by message ID plus send-start time during an agreed diagnostic window. In-flight/cancelled attempts may not have a completed entry.
 
